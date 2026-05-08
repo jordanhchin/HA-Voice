@@ -78,6 +78,7 @@ final class AppState {
         let previousProfile = serverProfile
         let previousToken = self.token
         let hadExistingConfiguration = hasServerConfiguration
+        var didSaveToken = false
 
         progress?("Saving access token")
         serverProfile.serverURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,6 +86,7 @@ final class AppState {
 
         do {
             try keychain.saveToken(self.token)
+            didSaveToken = true
             progress?("Testing Home Assistant connection")
             try await client.testConnection(serverURL: serverProfile.serverURL, token: self.token)
             serverProfile.lastConnectionStatus = .connected
@@ -103,10 +105,30 @@ final class AppState {
                 serverProfile = ServerProfile(lastConnectionStatus: .failed)
                 self.token = ""
             }
-            setupError = error.localizedDescription
+            let restoreError = restoreTokenAfterFailedSave(
+                didSaveToken: didSaveToken,
+                hadExistingConfiguration: hadExistingConfiguration,
+                previousToken: previousToken
+            )
+            setupError = restoreError ?? error.localizedDescription
             persist()
             progress?("Connection failed")
             return false
+        }
+    }
+
+    private func restoreTokenAfterFailedSave(didSaveToken: Bool, hadExistingConfiguration: Bool, previousToken: String) -> String? {
+        guard didSaveToken else { return nil }
+
+        do {
+            if hadExistingConfiguration {
+                try keychain.saveToken(previousToken)
+            } else {
+                try keychain.deleteToken()
+            }
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 
