@@ -71,12 +71,12 @@ private struct AppTitleView: View {
             Image("AppLogo")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 30, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .accessibilityHidden(true)
 
             Text("HA Voice")
-                .font(.headline)
+                .font(.title2.weight(.semibold))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
@@ -796,6 +796,7 @@ private struct SettingsView: View {
     @State private var connectionProgressMessage = "Starting"
     @State private var connectionResultMessage: String?
     @State private var connectionSucceeded = false
+    @State private var showingClearHistoryConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -855,7 +856,7 @@ private struct SettingsView: View {
 
                 Section("History") {
                     Button("Clear Message History", role: .destructive) {
-                        appState.clearHistory()
+                        showingClearHistoryConfirmation = true
                     }
                 }
 
@@ -905,6 +906,14 @@ private struct SettingsView: View {
                     showingConnectionProgress = false
                 }
             }
+            .alert("Clear Message History?", isPresented: $showingClearHistoryConfirmation) {
+                Button("Clear History", role: .destructive) {
+                    appState.clearHistory()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes all saved message history from this device.")
+            }
         }
     }
 
@@ -931,7 +940,7 @@ private struct SettingsView: View {
 private enum AppBuildInfo {
     static var displayString: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "2"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "3"
         return "\(version) (\(build))"
     }
 }
