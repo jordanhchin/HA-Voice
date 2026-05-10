@@ -291,21 +291,30 @@ private struct ComposerView: View {
                 senderName: appState.senderName
             )
 
-            HStack(alignment: .center, spacing: 10) {
-                TextField(mode == .countdown ? "Countdown message template" : "Message", text: $message, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...5)
-                    .disabled(mode == .countdown)
-
+            if mode == .countdown {
                 Button(action: send) {
-                    Image(systemName: sendIcon)
-                        .font(.title3.weight(.semibold))
-                        .frame(width: 50, height: 50)
+                    Label("Start Countdown", systemImage: sendIcon)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.borderedProminent)
-                .clipShape(Circle())
                 .disabled(sendDisabled)
-                .accessibilityLabel(mode == .once || mode == .onceAs ? "Send message" : "Start")
+            } else {
+                HStack(alignment: .center, spacing: 10) {
+                    TextField("Message", text: $message, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...5)
+
+                    Button(action: send) {
+                        Image(systemName: sendIcon)
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 50, height: 50)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(Circle())
+                    .disabled(sendDisabled)
+                    .accessibilityLabel(mode == .once || mode == .onceAs ? "Send message" : "Start")
+                }
             }
         }
         .padding()
@@ -377,8 +386,9 @@ private struct ModeControlsPanel: View {
             case .countdown:
                 Stepper("Countdown \(countdownMinutes) min", value: $countdownMinutes, in: 1...240)
                 Stepper("Speak every \(countdownIntervalMinutes) min", value: $countdownIntervalMinutes, in: 1...60)
-                TextField("Template", text: $countdownTemplate, axis: .vertical)
+                TextField("Countdown message template", text: $countdownTemplate, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...3)
                 TextField("Final message", text: $finalMessage)
                     .textFieldStyle(.roundedBorder)
             }
@@ -940,7 +950,7 @@ private struct SettingsView: View {
 private enum AppBuildInfo {
     static var displayString: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "3"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "4"
         return "\(version) (\(build))"
     }
 }
