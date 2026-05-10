@@ -148,6 +148,7 @@ private struct MainMessagingView: View {
 
 private struct MessageHistoryView: View {
     @Bindable var appState: AppState
+    @State private var isLatestMessageVisible = true
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -168,16 +169,48 @@ private struct MessageHistoryView: View {
                                 appState.resend(message)
                             }
                             .id(message.id)
+                            .onAppear {
+                                if message.id == appState.messages.last?.id {
+                                    isLatestMessageVisible = true
+                                }
+                            }
+                            .onDisappear {
+                                if message.id == appState.messages.last?.id {
+                                    isLatestMessageVisible = false
+                                }
+                            }
                         }
                     }
                 }
                 .padding()
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if let lastMessage = appState.messages.last, !isLatestMessageVisible {
+                    Button {
+                        withAnimation {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                        isLatestMessageVisible = true
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.headline.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(Circle())
+                    .shadow(radius: 8, y: 3)
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 18)
+                    .accessibilityLabel("Jump to latest message")
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
             .onChange(of: appState.messages.count) {
                 if let last = appState.messages.last {
                     withAnimation {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
+                    isLatestMessageVisible = true
                 }
             }
         }
@@ -950,7 +983,7 @@ private struct SettingsView: View {
 private enum AppBuildInfo {
     static var displayString: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "4"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "5"
         return "\(version) (\(build))"
     }
 }
