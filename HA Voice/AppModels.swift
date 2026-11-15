@@ -126,6 +126,7 @@ enum SessionStatus: String, Codable, Equatable {
     case completed
     case pausedBySystem
     case failed
+    case expired
 }
 
 struct RepeatSession: Identifiable, Codable, Equatable {
@@ -138,6 +139,7 @@ struct RepeatSession: Identifiable, Codable, Equatable {
     var startedAt: Date
     var sentCount: Int
     var status: SessionStatus
+    var inFlightMessageID: UUID? = nil
 
     var summary: String {
         switch limit {
@@ -162,6 +164,7 @@ struct CountdownSession: Identifiable, Codable, Equatable {
     var startedAt: Date
     var remaining: TimeInterval
     var status: SessionStatus
+    var inFlightMessageID: UUID? = nil
 
     var summary: String {
         "\(Int(ceil(max(remaining, 0) / 60))) min remaining"

@@ -510,15 +510,21 @@ private struct ActiveSessionsView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 ForEach(appState.activeRepeatSessions) { session in
-                    SessionPill(title: session.summary, status: session.status) {
-                        appState.stopRepeat(session)
-                    }
+                    SessionPill(
+                        title: session.summary,
+                        status: session.status,
+                        resume: { appState.resumeRepeat(session) },
+                        stop: { appState.stopRepeat(session) }
+                    )
                 }
 
                 ForEach(appState.activeCountdownSessions) { session in
-                    SessionPill(title: session.summary, status: session.status) {
-                        appState.stopCountdown(session)
-                    }
+                    SessionPill(
+                        title: session.summary,
+                        status: session.status,
+                        resume: { appState.resumeCountdown(session) },
+                        stop: { appState.stopCountdown(session) }
+                    )
                 }
             }
             .padding(.horizontal)
@@ -531,24 +537,52 @@ private struct ActiveSessionsView: View {
 private struct SessionPill: View {
     let title: String
     let status: SessionStatus
+    var resume: (() -> Void)? = nil
     let stop: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: status == .running ? "dot.radiowaves.left.and.right" : "checkmark.circle")
+            Image(systemName: iconName)
+                .foregroundStyle(iconColor)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(displayTitle)
                     .font(.subheadline.weight(.semibold))
             }
-            if status == .running {
-                Button("Stop", action: stop)
-                    .buttonStyle(.bordered)
+            if status == .pausedBySystem, let resume {
+                Button("Resume", action: resume)
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
+            Button("Stop", action: stop)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var iconName: String {
+        switch status {
+        case .running: "dot.radiowaves.left.and.right"
+        case .pausedBySystem: "pause.circle.fill"
+        default: "checkmark.circle"
+        }
+    }
+
+    private var iconColor: Color {
+        switch status {
+        case .running: .accentColor
+        case .pausedBySystem: .orange
+        default: .secondary
+        }
+    }
+
+    private var displayTitle: String {
+        if status == .pausedBySystem {
+            return "Paused (\(title))"
+        }
+        return title
     }
 }
 
