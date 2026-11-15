@@ -168,6 +168,14 @@ enum SessionStatus: String, Codable, Equatable {
     case pausedBySystem
     case failed
     case expired
+
+    var isResumable: Bool {
+        self == .pausedBySystem || self == .failed
+    }
+
+    var isActive: Bool {
+        self == .running || isResumable
+    }
 }
 
 struct RepeatSession: Identifiable, Codable, Equatable {

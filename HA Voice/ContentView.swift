@@ -550,7 +550,7 @@ private struct SessionPill: View {
                 Text(displayTitle)
                     .font(.subheadline.weight(.semibold))
             }
-            if status == .pausedBySystem, let resume {
+            if status.isResumable, let resume {
                 Button("Resume", action: resume)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -568,6 +568,7 @@ private struct SessionPill: View {
         switch status {
         case .running: "dot.radiowaves.left.and.right"
         case .pausedBySystem: "pause.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
         default: "checkmark.circle"
         }
     }
@@ -576,15 +577,20 @@ private struct SessionPill: View {
         switch status {
         case .running: .accentColor
         case .pausedBySystem: .orange
+        case .failed: .red
         default: .secondary
         }
     }
 
     private var displayTitle: String {
-        if status == .pausedBySystem {
+        switch status {
+        case .pausedBySystem:
             return "Paused (\(title))"
+        case .failed:
+            return "Failed (\(title))"
+        default:
+            return title
         }
-        return title
     }
 }
 

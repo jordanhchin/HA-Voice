@@ -713,6 +713,66 @@ struct SessionLifecycleTests {
         #expect(lastMsg.text == "Final Countdown Over")
     }
 
+    @Test func failedRepeatSendMarksSessionFailedAndResumable() async throws {
+        SessionMockURLProtocol.requestHandler = { _ in
+            (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 500, httpVersion: nil, headerFields: nil)!, Data())
+        }
+        defer { SessionMockURLProtocol.requestHandler = nil }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        appState.startRepeat(
+            message: "Oven check",
+            target: kitchen,
+            voice: .defaultPreset,
+            interval: 10,
+            limit: .count(2)
+        )
+
+        try await sessionWaitUntil {
+            appState.repeatSessions.first?.status == .failed
+        }
+
+        let failedSession = try #require(appState.repeatSessions.first)
+        #expect(failedSession.sentCount == 0)
+        #expect(appState.activeRepeatSessions.map(\.id) == [failedSession.id])
+        #expect(appState.messages.last?.status == .failed)
+
+        SessionMockURLProtocol.requestHandler = nil
+        appState.resumeRepeat(failedSession)
+
+        try await sessionWaitUntil {
+            appState.repeatSessions.first?.status == .completed
+        }
+        #expect(appState.repeatSessions.first?.sentCount == 2)
+    }
+
+    @Test func failedCountdownSendMarksSessionFailed() async throws {
+        SessionMockURLProtocol.requestHandler = { _ in
+            (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 500, httpVersion: nil, headerFields: nil)!, Data())
+        }
+        defer { SessionMockURLProtocol.requestHandler = nil }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        appState.startCountdown(
+            totalDuration: 60,
+            interval: 20,
+            target: kitchen,
+            voice: .defaultPreset,
+            template: "{minutes} min left",
+            finalMessage: "Done"
+        )
+
+        try await sessionWaitUntil {
+            appState.countdownSessions.first?.status == .failed
+        }
+        #expect(appState.activeCountdownSessions.count == 1)
+        #expect(clock.sleepDurations.isEmpty)
+    }
+
     @Test func countdownDriftCompensationUnderSendLatency() async throws {
         let clock = SessionTestClock()
         // Simulate 5 seconds latency on every TTS send

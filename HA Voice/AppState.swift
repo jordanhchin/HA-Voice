@@ -90,11 +90,11 @@ final class AppState {
     }
 
     var activeRepeatSessions: [RepeatSession] {
-        repeatSessions.filter { $0.status == .running || $0.status == .pausedBySystem }
+        repeatSessions.filter { $0.status.isActive }
     }
 
     var activeCountdownSessions: [CountdownSession] {
-        countdownSessions.filter { $0.status == .running || $0.status == .pausedBySystem }
+        countdownSessions.filter { $0.status.isActive }
     }
 
     var hasActiveSessions: Bool {
@@ -325,7 +325,7 @@ final class AppState {
 
     func resumeRepeat(_ session: RepeatSession) {
         guard let index = repeatSessions.firstIndex(where: { $0.id == session.id }),
-              repeatSessions[index].status == .pausedBySystem else { return }
+              repeatSessions[index].status.isResumable else { return }
 
         if shouldCompleteRepeat(session.id) {
             repeatSessions[index].status = .completed
@@ -338,7 +338,7 @@ final class AppState {
 
     func resumeCountdown(_ session: CountdownSession) {
         guard let index = countdownSessions.firstIndex(where: { $0.id == session.id }),
-              countdownSessions[index].status == .pausedBySystem else { return }
+              countdownSessions[index].status.isResumable else { return }
 
         let elapsed = now().timeIntervalSince(session.startedAt)
         let overdue = elapsed - session.totalDuration
@@ -512,6 +512,7 @@ final class AppState {
                 }
 
                 guard sendSucceeded else {
+                    self.updateRepeatSession(id) { $0.status = .failed }
                     break
                 }
 
@@ -612,10 +613,12 @@ final class AppState {
                         break
                     }
 
-                    if sendSucceeded {
-                        self.updateCountdownSession(id) {
+                    self.updateCountdownSession(id) {
+                        if sendSucceeded {
                             $0.remaining = 0
                             $0.status = .completed
+                        } else {
+                            $0.status = .failed
                         }
                     }
                     break
@@ -637,6 +640,7 @@ final class AppState {
                 }
 
                 guard sendSucceeded else {
+                    self.updateCountdownSession(id) { $0.status = .failed }
                     break
                 }
 
@@ -683,8 +687,8 @@ final class AppState {
     }
 
     private func clearInactiveSessions() {
-        repeatSessions.removeAll { $0.status != .running && $0.status != .pausedBySystem }
-        countdownSessions.removeAll { $0.status != .running && $0.status != .pausedBySystem }
+        repeatSessions.removeAll { !$0.status.isActive }
+        countdownSessions.removeAll { !$0.status.isActive }
     }
 
     private func updateMessage(_ id: UUID, _ update: (inout MessageRecord) -> Void) {
