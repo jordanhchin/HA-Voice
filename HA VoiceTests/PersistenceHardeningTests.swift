@@ -185,8 +185,16 @@ struct PersistenceHardeningTests {
 
         #expect(decoded.serverProfile.lastConnectionStatus == .notTested)
         #expect(decoded.messages.count == 1)
-        #expect(decoded.messages[0].status == .failed)
+        #expect(decoded.messages[0].status == .unknown)
         #expect(decoded.messages[0].kind == .single)
+    }
+
+    @Test func messageStatusDecodesUnknownValuesToUnknown() throws {
+        let known = try JSONDecoder().decode(MessageStatus.self, from: "\"sent\"".data(using: .utf8)!)
+        #expect(known == .sent)
+
+        let unknown = try JSONDecoder().decode(MessageStatus.self, from: "\"futureUnrecognizedStatus\"".data(using: .utf8)!)
+        #expect(unknown == .unknown)
     }
 
     @Test func dropsCorruptMediaPlayerTargetWhilePreservingValidTargets() throws {

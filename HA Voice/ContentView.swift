@@ -275,6 +275,7 @@ private struct MessageBubbleView: View {
         case .sent: "Sent \(record.sentAt.formatted(date: .omitted, time: .shortened))"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
+        case .unknown: "Status unknown"
         }
     }
 
@@ -284,6 +285,7 @@ private struct MessageBubbleView: View {
         case .sent: "checkmark.circle"
         case .failed: "exclamationmark.triangle"
         case .cancelled: "xmark.circle"
+        case .unknown: "questionmark.circle"
         }
     }
 
@@ -570,6 +572,9 @@ private struct SetupView: View {
                     .textContentType(.URL)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
+                Text("Defaults to https://. Local servers without SSL usually need http://.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 SecureField("Long-lived access token", text: $token)
                 if serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("http://") {
                     Label("Insecure HTTP connection: Token is sent over the network in cleartext.", systemImage: "exclamationmark.triangle.fill")
@@ -864,6 +869,9 @@ private struct SettingsView: View {
                     TextField("Server URL", text: $serverURL)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                    Text("Defaults to https://. Local servers without SSL usually need http://.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     SecureField("Long-lived access token", text: $token)
                     if isHTTPConnection {
                         Label("Insecure HTTP connection: Token is sent over the network in cleartext.", systemImage: "exclamationmark.triangle.fill")

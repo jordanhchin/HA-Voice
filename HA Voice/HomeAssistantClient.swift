@@ -5,13 +5,13 @@ struct HomeAssistantClient {
 
     func testConnection(serverURL: String, token: String) async throws {
         let request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/")
-        let (_, response) = try await execute(request)
+        let (_, response) = try await execute(request, rawServerURL: serverURL)
         try validate(response)
     }
 
     func fetchMediaPlayers(serverURL: String, token: String) async throws -> [MediaPlayerTarget] {
         let request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/states")
-        let (data, response) = try await execute(request)
+        let (data, response) = try await execute(request, rawServerURL: serverURL)
         try validate(response)
         return try Self.mediaPlayers(from: data)
     }
@@ -29,7 +29,7 @@ struct HomeAssistantClient {
             withJSONObject: Self.ttsPayload(message: message, target: target, voicePreset: voicePreset),
             options: []
         )
-        let (_, response) = try await execute(request)
+        let (_, response) = try await execute(request, rawServerURL: serverURL)
         try validate(response)
     }
 
@@ -97,13 +97,60 @@ struct HomeAssistantClient {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
-    private func execute(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    private func execute(_ request: URLRequest, rawServerURL: String) async throws -> (Data, URLResponse) {
         do {
             return try await urlSession.data(for: request)
         } catch let urlError as URLError where urlError.code == .appTransportSecurityRequiresSecureConnection {
             throw HomeAssistantError.insecureConnectionBlocked
         } catch let nsError as NSError where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
             throw HomeAssistantError.insecureConnectionBlocked
+        } catch {
+            if isTLSOrConnectionError(error) {
+                let trimmed = rawServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.contains("://") {
+                    var withoutTrailing = trimmed
+                    while withoutTrailing.hasSuffix("/") {
+                        withoutTrailing.removeLast()
+                    }
+                    throw HomeAssistantError.secureConnectionFailed(suggestion: "http://\(withoutTrailing)")
+                } else {
+                    throw HomeAssistantError.secureConnectionFailed(suggestion: nil)
+                }
+            }
+            throw error
+        }
+    }
+
+    private func isTLSOrConnectionError(_ error: Error) -> Bool {
+        let code: Int? = {
+            if let urlError = error as? URLError {
+                return urlError.errorCode
+            }
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain {
+                return nsError.code
+            }
+            return nil
+        }()
+
+        guard let code else { return false }
+
+        switch code {
+        case NSURLErrorSecureConnectionFailed,
+             NSURLErrorServerCertificateHasBadDate,
+             NSURLErrorServerCertificateUntrusted,
+             NSURLErrorServerCertificateHasUnknownRoot,
+             NSURLErrorServerCertificateNotYetValid,
+             NSURLErrorClientCertificateRejected,
+             NSURLErrorClientCertificateRequired,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorTimedOut,
+             NSURLErrorCannotFindHost,
+             -1206 ... -1200:
+            return true
+        default:
+            return false
         }
     }
 
@@ -140,6 +187,7 @@ enum HomeAssistantError: LocalizedError, Equatable {
     case invalidResponse
     case authenticationFailed
     case insecureConnectionBlocked
+    case secureConnectionFailed(suggestion: String?)
     case serviceFailed(Int)
 
     var errorDescription: String? {
@@ -154,6 +202,12 @@ enum HomeAssistantError: LocalizedError, Equatable {
             "The Home Assistant token was rejected."
         case .insecureConnectionBlocked:
             "Insecure HTTP connection blocked. Remote servers require HTTPS."
+        case .secureConnectionFailed(let suggestion):
+            if let suggestion {
+                "Couldn't connect securely. If this is a local Home Assistant server, try \(suggestion)"
+            } else {
+                "Couldn't connect securely."
+            }
         case .serviceFailed(let statusCode):
             "Home Assistant returned status \(statusCode)."
         }

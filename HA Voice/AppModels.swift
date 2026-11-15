@@ -116,6 +116,13 @@ enum MessageStatus: String, Codable, Equatable {
     case sent
     case failed
     case cancelled
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try? container.decode(String.self)
+        self = raw.flatMap(MessageStatus.init(rawValue:)) ?? .unknown
+    }
 }
 
 enum MessageKind: String, Codable, Equatable {
@@ -338,9 +345,9 @@ private struct LenientMessageRecord: Decodable {
         sentAt = try container.decode(Date.self, forKey: .sentAt)
 
         if let statusRaw = try? container.decodeIfPresent(String.self, forKey: .status) {
-            status = MessageStatus(rawValue: statusRaw) ?? .failed
+            status = MessageStatus(rawValue: statusRaw) ?? .unknown
         } else {
-            status = .failed
+            status = .unknown
         }
 
         errorMessage = try? container.decodeIfPresent(String.self, forKey: .errorMessage)

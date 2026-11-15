@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HA_Voice
 
-final class MockURLProtocol: URLProtocol {
+final class ClientMockURLProtocol: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var handlers: [String: (URLRequest) throws -> (HTTPURLResponse, Data)] = [:]
 
@@ -82,14 +82,14 @@ struct HomeAssistantClientMockTests {
 
     private func makeClient() -> HomeAssistantClient {
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
+        config.protocolClasses = [ClientMockURLProtocol.self]
         let session = URLSession(configuration: config)
         return HomeAssistantClient(urlSession: session)
     }
 
     @Test func authenticationFailure401ThrowsAuthenticationFailed() async {
         let token = "test-token-401"
-        MockURLProtocol.setHandler(forToken: token) { request in
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 401,
@@ -98,7 +98,7 @@ struct HomeAssistantClientMockTests {
             )!
             return (response, Data())
         }
-        defer { MockURLProtocol.removeHandler(forToken: token) }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
 
         let client = makeClient()
         await #expect(throws: HomeAssistantError.authenticationFailed) {
@@ -108,7 +108,7 @@ struct HomeAssistantClientMockTests {
 
     @Test func authenticationFailure403ThrowsAuthenticationFailed() async {
         let token = "test-token-403"
-        MockURLProtocol.setHandler(forToken: token) { request in
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 403,
@@ -117,7 +117,7 @@ struct HomeAssistantClientMockTests {
             )!
             return (response, Data())
         }
-        defer { MockURLProtocol.removeHandler(forToken: token) }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
 
         let client = makeClient()
         await #expect(throws: HomeAssistantError.authenticationFailed) {
@@ -127,7 +127,7 @@ struct HomeAssistantClientMockTests {
 
     @Test func emptyStatesReturnsNoPlayers() async throws {
         let token = "test-token-empty-states"
-        MockURLProtocol.setHandler(forToken: token) { request in
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -137,7 +137,7 @@ struct HomeAssistantClientMockTests {
             let data = "[]".data(using: .utf8)!
             return (response, data)
         }
-        defer { MockURLProtocol.removeHandler(forToken: token) }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
 
         let client = makeClient()
         let players = try await client.fetchMediaPlayers(serverURL: "https://ha.local:8123", token: token)
@@ -161,7 +161,7 @@ struct HomeAssistantClientMockTests {
         ]
         """.data(using: .utf8)!
 
-        MockURLProtocol.setHandler(forToken: token) { request in
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -170,7 +170,7 @@ struct HomeAssistantClientMockTests {
             )!
             return (response, nonPlayersJSON)
         }
-        defer { MockURLProtocol.removeHandler(forToken: token) }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
 
         let client = makeClient()
         let players = try await client.fetchMediaPlayers(serverURL: "https://ha.local:8123", token: token)
@@ -179,7 +179,7 @@ struct HomeAssistantClientMockTests {
 
     @Test func cloudSay500ThrowsServiceFailedWithUsefulMessage() async {
         let token = "test-token-500"
-        MockURLProtocol.setHandler(forToken: token) { request in
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 500,
@@ -188,7 +188,7 @@ struct HomeAssistantClientMockTests {
             )!
             return (response, Data())
         }
-        defer { MockURLProtocol.removeHandler(forToken: token) }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
 
         let client = makeClient()
         let voice = VoicePreset(id: UUID(), name: "Maisie", language: "en-GB", voice: "MaisieNeural", isCustom: false)
@@ -213,7 +213,7 @@ struct HomeAssistantClientMockTests {
         let token = "secret-token-xyz"
         var capturedRequest: URLRequest?
 
-        MockURLProtocol.setHandler(forToken: token) { request in
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
             capturedRequest = request
             let response = HTTPURLResponse(
                 url: request.url!,
@@ -223,7 +223,7 @@ struct HomeAssistantClientMockTests {
             )!
             return (response, Data())
         }
-        defer { MockURLProtocol.removeHandler(forToken: token) }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
 
         let client = makeClient()
         let voice = VoicePreset(id: UUID(), name: "Guy", language: "en-US", voice: "GuyNeural", isCustom: true)
@@ -253,10 +253,10 @@ struct HomeAssistantClientMockTests {
 
     @Test func atsBlockedInsecureHTTPThrowsClearError() async {
         let token = "test-token-ats"
-        MockURLProtocol.setHandler(forToken: token) { _ in
+        ClientMockURLProtocol.setHandler(forToken: token) { _ in
             throw URLError(.appTransportSecurityRequiresSecureConnection)
         }
-        defer { MockURLProtocol.removeHandler(forToken: token) }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
 
         let client = makeClient()
         do {
@@ -265,6 +265,68 @@ struct HomeAssistantClientMockTests {
         } catch let error as HomeAssistantError {
             #expect(error == .insecureConnectionBlocked)
             #expect(error.errorDescription == "Insecure HTTP connection blocked. Remote servers require HTTPS.")
+        } catch {
+            #expect(Bool(false), "Unexpected error type: \(error)")
+        }
+    }
+
+    @Test func tlsFailureOnSchemelessHostSuggestsHTTP() async {
+        let token = "test-token-tls-schemeless"
+        ClientMockURLProtocol.setHandler(forToken: token) { _ in
+            throw URLError(.secureConnectionFailed)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        do {
+            try await client.testConnection(serverURL: "homeassistant.local:8123", token: token)
+            #expect(Bool(false), "Expected secureConnectionFailed to be thrown")
+        } catch let error as HomeAssistantError {
+            #expect(error == .secureConnectionFailed(suggestion: "http://homeassistant.local:8123"))
+            let desc = error.errorDescription ?? ""
+            #expect(desc.contains("try http://homeassistant.local:8123"))
+            #expect(desc.contains("Couldn't connect securely."))
+        } catch {
+            #expect(Bool(false), "Unexpected error type: \(error)")
+        }
+    }
+
+    @Test func connectionFailureOnSchemelessHostWithSlashSuggestsHTTPWithoutTrailingSlash() async {
+        let token = "test-token-conn-schemeless"
+        ClientMockURLProtocol.setHandler(forToken: token) { _ in
+            throw URLError(.cannotConnectToHost)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        do {
+            try await client.testConnection(serverURL: "homeassistant.local:8123/", token: token)
+            #expect(Bool(false), "Expected secureConnectionFailed to be thrown")
+        } catch let error as HomeAssistantError {
+            #expect(error == .secureConnectionFailed(suggestion: "http://homeassistant.local:8123"))
+            let desc = error.errorDescription ?? ""
+            #expect(desc.contains("try http://homeassistant.local:8123"))
+        } catch {
+            #expect(Bool(false), "Unexpected error type: \(error)")
+        }
+    }
+
+    @Test func tlsFailureOnExplicitHTTPSDoesNotSuggestHTTP() async {
+        let token = "test-token-tls-explicit"
+        ClientMockURLProtocol.setHandler(forToken: token) { _ in
+            throw URLError(.secureConnectionFailed)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        do {
+            try await client.testConnection(serverURL: "https://homeassistant.local:8123", token: token)
+            #expect(Bool(false), "Expected secureConnectionFailed to be thrown")
+        } catch let error as HomeAssistantError {
+            #expect(error == .secureConnectionFailed(suggestion: nil))
+            let desc = error.errorDescription ?? ""
+            #expect(desc == "Couldn't connect securely.")
+            #expect(!desc.contains("http:"))
         } catch {
             #expect(Bool(false), "Unexpected error type: \(error)")
         }
