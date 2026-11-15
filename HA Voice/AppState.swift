@@ -23,19 +23,42 @@ final class AppState {
     private let client: HomeAssistantClient
     private let keychain: KeychainTokenStore
     private let defaults: UserDefaults
+    private let now: @Sendable () -> Date
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
     private var repeatTasks: [UUID: Task<Void, Never>] = [:]
     private var countdownTasks: [UUID: Task<Void, Never>] = [:]
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
-    init(client: HomeAssistantClient, keychain: KeychainTokenStore, defaults: UserDefaults) {
+    init(
+        client: HomeAssistantClient,
+        keychain: KeychainTokenStore,
+        defaults: UserDefaults,
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+            try await Task.sleep(for: .seconds(seconds))
+        }
+    ) {
         self.client = client
         self.keychain = keychain
         self.defaults = defaults
+        self.now = now
+        self.sleep = sleep
         load()
     }
 
-    convenience init() {
-        self.init(client: HomeAssistantClient(), keychain: KeychainTokenStore(), defaults: .standard)
+    convenience init(
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+            try await Task.sleep(for: .seconds(seconds))
+        }
+    ) {
+        self.init(
+            client: HomeAssistantClient(),
+            keychain: KeychainTokenStore(),
+            defaults: .standard,
+            now: now,
+            sleep: sleep
+        )
     }
 
     var hasServerConfiguration: Bool {
@@ -63,11 +86,11 @@ final class AppState {
     }
 
     var activeRepeatSessions: [RepeatSession] {
-        repeatSessions.filter { $0.status == .running }
+        repeatSessions.filter { $0.status == .running || $0.status == .pausedBySystem }
     }
 
     var activeCountdownSessions: [CountdownSession] {
-        countdownSessions.filter { $0.status == .running }
+        countdownSessions.filter { $0.status == .running || $0.status == .pausedBySystem }
     }
 
     var hasActiveSessions: Bool {
@@ -268,12 +291,43 @@ final class AppState {
         repeatTasks[session.id]?.cancel()
         repeatTasks[session.id] = nil
         repeatSessions.removeAll { $0.id == session.id }
+        if let lastIndex = messages.indices.reversed().first(where: { messages[$0].status == .sending && messages[$0].kind == .repeated }) {
+            messages[lastIndex].status = .cancelled
+            messages[lastIndex].errorMessage = nil
+            persist()
+        }
     }
 
     func stopCountdown(_ session: CountdownSession) {
         countdownTasks[session.id]?.cancel()
         countdownTasks[session.id] = nil
         countdownSessions.removeAll { $0.id == session.id }
+        if let lastIndex = messages.indices.reversed().first(where: { messages[$0].status == .sending && messages[$0].kind == .countdown }) {
+            messages[lastIndex].status = .cancelled
+            messages[lastIndex].errorMessage = nil
+            persist()
+        }
+    }
+
+    func resumeRepeat(_ session: RepeatSession) {
+        guard let index = repeatSessions.firstIndex(where: { $0.id == session.id }),
+              repeatSessions[index].status == .pausedBySystem else { return }
+
+        if shouldCompleteRepeat(session.id) {
+            repeatSessions[index].status = .completed
+            return
+        }
+
+        repeatSessions[index].status = .running
+        runRepeatSession(session.id)
+    }
+
+    func resumeCountdown(_ session: CountdownSession) {
+        guard let index = countdownSessions.firstIndex(where: { $0.id == session.id }),
+              countdownSessions[index].status == .pausedBySystem else { return }
+
+        countdownSessions[index].status = .running
+        runCountdownSession(session.id)
     }
 
     func appDidEnterBackground() {
@@ -307,7 +361,7 @@ final class AppState {
                 text: trimmed,
                 target: target,
                 voicePreset: voice,
-                sentAt: Date(),
+                sentAt: now(),
                 status: .sending,
                 errorMessage: nil,
                 kind: kind,
@@ -330,13 +384,18 @@ final class AppState {
             }
         } catch {
             updateMessage(id) {
-                $0.status = .failed
-                $0.errorMessage = error.localizedDescription
+                if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    $0.status = .cancelled
+                    $0.errorMessage = nil
+                } else {
+                    $0.status = .failed
+                    $0.errorMessage = error.localizedDescription
+                }
             }
         }
     }
 
-    private func startRepeat(
+    func startRepeat(
         message: String,
         target: MediaPlayerTarget,
         voice: VoicePreset,
@@ -351,31 +410,46 @@ final class AppState {
             voicePreset: voice,
             interval: interval,
             limit: limit,
-            startedAt: Date(),
+            startedAt: now(),
             sentCount: 0,
             status: .running
         )
         repeatSessions.insert(session, at: 0)
+        runRepeatSession(session.id)
+    }
 
-        repeatTasks[session.id] = Task { [weak self] in
+    private func runRepeatSession(_ id: UUID) {
+        repeatTasks[id]?.cancel()
+        repeatTasks[id] = Task { [weak self] in
             guard let self else { return }
-            let start = Date()
 
             while !Task.isCancelled {
-                await self.sendMessage(message, target: target, voice: voice, kind: .repeated, detail: session.summary)
-                self.incrementRepeatSession(session.id)
+                guard let session = self.repeatSessions.first(where: { $0.id == id }) else { return }
 
-                if self.shouldCompleteRepeat(session.id, startedAt: start) {
-                    self.updateRepeatSession(session.id) { $0.status = .completed }
+                if self.shouldCompleteRepeat(id) {
+                    self.updateRepeatSession(id) { $0.status = .completed }
                     break
                 }
 
-                try? await Task.sleep(for: .seconds(interval))
+                self.incrementRepeatSession(id)
+                let detail = self.repeatSessions.first(where: { $0.id == id })?.summary
+                await self.sendMessage(session.message, target: session.target, voice: session.voicePreset, kind: .repeated, detail: detail)
+
+                if self.shouldCompleteRepeat(id) {
+                    self.updateRepeatSession(id) { $0.status = .completed }
+                    break
+                }
+
+                do {
+                    try await self.sleep(session.interval)
+                } catch {
+                    break
+                }
             }
         }
     }
 
-    private func startCountdown(
+    func startCountdown(
         totalDuration: TimeInterval,
         interval: TimeInterval,
         target: MediaPlayerTarget,
@@ -399,33 +473,45 @@ final class AppState {
             voicePreset: voice,
             template: safeTemplate,
             finalMessage: safeFinal,
-            startedAt: Date(),
+            startedAt: now(),
             remaining: totalDuration,
             status: .running
         )
         countdownSessions.insert(session, at: 0)
+        runCountdownSession(session.id)
+    }
 
-        countdownTasks[session.id] = Task { [weak self] in
+    private func runCountdownSession(_ id: UUID) {
+        countdownTasks[id]?.cancel()
+        countdownTasks[id] = Task { [weak self] in
             guard let self else { return }
-            var remaining = totalDuration
 
-            while !Task.isCancelled && remaining > 0 {
-                let message = Self.countdownMessage(template: safeTemplate, remaining: remaining)
-                await self.sendMessage(message, target: target, voice: voice, kind: .countdown, detail: "\(Int(ceil(remaining / 60))) min remaining")
-                remaining -= interval
-                self.updateCountdownSession(session.id) {
+            while !Task.isCancelled {
+                guard let session = self.countdownSessions.first(where: { $0.id == id }) else { return }
+                let elapsed = self.now().timeIntervalSince(session.startedAt)
+                let remaining = session.totalDuration - elapsed
+
+                if remaining <= 0 {
+                    await self.sendMessage(session.finalMessage, target: session.target, voice: session.voicePreset, kind: .countdown, detail: "Final")
+                    self.updateCountdownSession(id) {
+                        $0.remaining = 0
+                        $0.status = .completed
+                    }
+                    break
+                }
+
+                let minutes = max(Int(ceil(remaining / 60)), 0)
+                let message = Self.countdownMessage(template: session.template, remaining: remaining)
+                await self.sendMessage(message, target: session.target, voice: session.voicePreset, kind: .countdown, detail: "\(minutes) min remaining")
+                self.updateCountdownSession(id) {
                     $0.remaining = max(remaining, 0)
                 }
-                if remaining > 0 {
-                    try? await Task.sleep(for: .seconds(interval))
-                }
-            }
 
-            if !Task.isCancelled {
-                await self.sendMessage(safeFinal, target: target, voice: voice, kind: .countdown, detail: "Final")
-                self.updateCountdownSession(session.id) {
-                    $0.remaining = 0
-                    $0.status = .completed
+                let sleepDuration = min(session.interval, remaining)
+                do {
+                    try await self.sleep(sleepDuration)
+                } catch {
+                    break
                 }
             }
         }
@@ -445,9 +531,9 @@ final class AppState {
         return "\(trimmedName) says: \(trimmedMessage)"
     }
 
-    private func shouldCompleteRepeat(_ id: UUID, startedAt: Date) -> Bool {
+    private func shouldCompleteRepeat(_ id: UUID) -> Bool {
         guard let session = repeatSessions.first(where: { $0.id == id }) else { return true }
-        return session.limit.isComplete(sentCount: session.sentCount, elapsed: Date().timeIntervalSince(startedAt))
+        return session.limit.isComplete(sentCount: session.sentCount, elapsed: now().timeIntervalSince(session.startedAt))
     }
 
     private func incrementRepeatSession(_ id: UUID) {
@@ -455,8 +541,8 @@ final class AppState {
     }
 
     private func clearInactiveSessions() {
-        repeatSessions.removeAll { $0.status != .running }
-        countdownSessions.removeAll { $0.status != .running }
+        repeatSessions.removeAll { $0.status != .running && $0.status != .pausedBySystem }
+        countdownSessions.removeAll { $0.status != .running && $0.status != .pausedBySystem }
     }
 
     private func updateMessage(_ id: UUID, _ update: (inout MessageRecord) -> Void) {
@@ -475,23 +561,28 @@ final class AppState {
         update(&countdownSessions[index])
     }
 
+    func handleBackgroundExpiration() {
+        for index in repeatSessions.indices where repeatSessions[index].status == .running {
+            repeatSessions[index].status = .pausedBySystem
+        }
+        for index in countdownSessions.indices where countdownSessions[index].status == .running {
+            countdownSessions[index].status = .pausedBySystem
+        }
+        repeatTasks.values.forEach { $0.cancel() }
+        repeatTasks.removeAll()
+        countdownTasks.values.forEach { $0.cancel() }
+        countdownTasks.removeAll()
+
+        backgroundWarning = "iOS paused active repeat work while HA Voice was in the background."
+        endBackgroundTask()
+    }
+
     private func beginBackgroundTask() {
         guard backgroundTaskID == .invalid else { return }
         backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "HA Voice repeat session") { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                self.repeatSessions.indices.forEach { index in
-                    if self.repeatSessions[index].status == .running {
-                        self.repeatSessions[index].status = .pausedBySystem
-                    }
-                }
-                self.countdownSessions.indices.forEach { index in
-                    if self.countdownSessions[index].status == .running {
-                        self.countdownSessions[index].status = .pausedBySystem
-                    }
-                }
-                self.backgroundWarning = "iOS paused active repeat work while HA Voice was in the background."
-                self.endBackgroundTask()
+                self.handleBackgroundExpiration()
             }
         }
     }
