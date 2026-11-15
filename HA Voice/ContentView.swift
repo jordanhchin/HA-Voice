@@ -148,7 +148,7 @@ private struct MainMessagingView: View {
 
 private struct MessageHistoryView: View {
     @Bindable var appState: AppState
-    @State private var isLatestMessageVisible = true
+    @State private var isScrolledToLatest = true
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -169,28 +169,26 @@ private struct MessageHistoryView: View {
                                 appState.resend(message)
                             }
                             .id(message.id)
-                            .onAppear {
-                                if message.id == appState.messages.last?.id {
-                                    isLatestMessageVisible = true
-                                }
-                            }
-                            .onDisappear {
-                                if message.id == appState.messages.last?.id {
-                                    isLatestMessageVisible = false
-                                }
-                            }
                         }
                     }
                 }
                 .padding()
             }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                let distanceFromBottom = geometry.contentSize.height
+                    - geometry.containerSize.height
+                    - geometry.contentOffset.y
+                return distanceFromBottom <= 80
+            } action: { _, isAtBottom in
+                isScrolledToLatest = isAtBottom
+            }
             .overlay(alignment: .bottomTrailing) {
-                if let lastMessage = appState.messages.last, !isLatestMessageVisible {
+                if let lastMessage = appState.messages.last, !isScrolledToLatest {
                     Button {
                         withAnimation {
                             proxy.scrollTo(lastMessage.id, anchor: .bottom)
                         }
-                        isLatestMessageVisible = true
+                        isScrolledToLatest = true
                     } label: {
                         Image(systemName: "arrow.down")
                             .font(.headline.weight(.semibold))
@@ -205,12 +203,13 @@ private struct MessageHistoryView: View {
                     .transition(.scale.combined(with: .opacity))
                 }
             }
+            .animation(.easeInOut(duration: 0.18), value: isScrolledToLatest)
             .onChange(of: appState.messages.count) {
                 if let last = appState.messages.last {
                     withAnimation {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
-                    isLatestMessageVisible = true
+                    isScrolledToLatest = true
                 }
             }
         }
