@@ -52,7 +52,7 @@ open "HA Voice.xcodeproj"
 
 Select the `HA Voice` scheme, then build and run on an iOS simulator or device.
 
-For personal builds, update signing as needed in Xcode. The checked-in project currently uses the bundle identifier `WaverlyWorks.net.HA-Voice`; public forks should change the bundle identifier and development team before distributing their own build.
+For personal builds, update signing as needed in Xcode. The checked-in project currently uses the bundle identifier `WaverlyWorks.net.HAVoice`; public forks should change the bundle identifier and development team before distributing their own build.
 
 ## Testing
 
