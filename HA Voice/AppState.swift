@@ -439,6 +439,7 @@ final class AppState {
             return true
         } catch {
             updateMessage(id) {
+                guard $0.status == .sending else { return }
                 if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
                     $0.status = .cancelled
                     $0.errorMessage = nil
@@ -624,33 +625,41 @@ final class AppState {
                     break
                 }
 
-                let minutes = max(Int(ceil(remaining / 60)), 0)
-                let message = Self.countdownMessage(template: session.template, remaining: remaining)
-                let sendSucceeded = await self.sendMessage(
-                    message,
-                    target: session.target,
-                    voice: session.voicePreset,
-                    kind: .countdown,
-                    detail: "\(minutes) min remaining",
-                    sessionID: id
-                )
+                let dueIndex = Int(elapsed / session.interval)
+                if dueIndex >= session.announcedCount {
+                    // Counted before sending so an interrupted send isn't replayed on resume.
+                    self.updateCountdownSession(id) { $0.announcedCount = dueIndex + 1 }
 
-                if Task.isCancelled {
-                    break
+                    let minutes = max(Int(ceil(remaining / 60)), 0)
+                    let message = Self.countdownMessage(template: session.template, remaining: remaining)
+                    let sendSucceeded = await self.sendMessage(
+                        message,
+                        target: session.target,
+                        voice: session.voicePreset,
+                        kind: .countdown,
+                        detail: "\(minutes) min remaining",
+                        sessionID: id
+                    )
+
+                    if Task.isCancelled {
+                        break
+                    }
+
+                    guard sendSucceeded else {
+                        self.updateCountdownSession(id) {
+                            $0.announcedCount = session.announcedCount
+                            $0.status = .failed
+                        }
+                        break
+                    }
+
+                    self.updateCountdownSession(id) {
+                        $0.remaining = max(deadline.timeIntervalSince(self.now()), 0)
+                    }
                 }
 
-                guard sendSucceeded else {
-                    self.updateCountdownSession(id) { $0.status = .failed }
-                    break
-                }
-
-                self.updateCountdownSession(id) {
-                    $0.remaining = max(deadline.timeIntervalSince(self.now()), 0)
-                }
-
-                let currentElapsed = self.now().timeIntervalSince(session.startedAt)
-                let intervalsPassed = floor((currentElapsed + 0.001) / session.interval)
-                let nextIntervalTime = session.startedAt.addingTimeInterval((intervalsPassed + 1) * session.interval)
+                guard let announcedCount = self.countdownSessions.first(where: { $0.id == id })?.announcedCount else { return }
+                let nextIntervalTime = session.startedAt.addingTimeInterval(Double(announcedCount) * session.interval)
                 let nextTarget = min(nextIntervalTime, deadline)
                 let sleepDuration = max(nextTarget.timeIntervalSince(self.now()), 0)
 
@@ -708,11 +717,26 @@ final class AppState {
     }
 
     func handleBackgroundExpiration() {
+        // A send cut off mid-request may already have been announced, so it counts as sent
+        // and is marked unknown rather than being replayed on resume.
         for index in repeatSessions.indices where repeatSessions[index].status == .running {
+            let session = repeatSessions[index]
             repeatSessions[index].status = .pausedBySystem
+            if markInFlightMessageUnknown(sessionID: session.id) {
+                repeatSessions[index].sentCount += 1
+                if shouldCompleteRepeat(session.id) {
+                    repeatSessions[index].status = .completed
+                }
+            }
         }
         for index in countdownSessions.indices where countdownSessions[index].status == .running {
+            let session = countdownSessions[index]
             countdownSessions[index].status = .pausedBySystem
+            let deadline = session.startedAt.addingTimeInterval(session.totalDuration)
+            if markInFlightMessageUnknown(sessionID: session.id), now() >= deadline {
+                countdownSessions[index].remaining = 0
+                countdownSessions[index].status = .completed
+            }
         }
         repeatTasks.values.forEach { $0.cancel() }
         repeatTasks.removeAll()
@@ -721,6 +745,17 @@ final class AppState {
 
         backgroundWarning = "iOS paused active repeat work while HA Voice was in the background."
         endBackgroundTask()
+    }
+
+    private func markInFlightMessageUnknown(sessionID: UUID) -> Bool {
+        guard let messageID = sessionInFlightMessageIDs[sessionID],
+              let index = messages.firstIndex(where: { $0.id == messageID && $0.status == .sending }) else {
+            return false
+        }
+        messages[index].status = .unknown
+        messages[index].errorMessage = nil
+        persist()
+        return true
     }
 
     private func beginBackgroundTask() {

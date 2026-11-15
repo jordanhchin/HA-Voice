@@ -595,7 +595,7 @@ struct SessionLifecycleTests {
         }
     }
 
-    @Test func cancelledFinalRepeatSendLeavesSessionPausedAndResumable() async throws {
+    @Test func interruptedFinalRepeatSendIsUnknownAndNotReplayed() async throws {
         let barrier = SessionAtomicBarrier()
         SessionMockURLProtocol.requestHandler = { _ in
             let count = barrier.incrementRequestCount()
@@ -606,6 +606,7 @@ struct SessionLifecycleTests {
             }
             return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
         }
+        defer { SessionMockURLProtocol.requestHandler = nil }
 
         let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
@@ -618,46 +619,29 @@ struct SessionLifecycleTests {
             limit: .count(2)
         )
 
-        // Wait until final send attempt (request #2) is in flight
         try await sessionWaitUntil {
             barrier.requestCount >= 2
         }
 
-        // Simulate background expiration while final send is in flight
         appState.handleBackgroundExpiration()
-
-        let pausedSession = try #require(appState.repeatSessions.first)
-        #expect(pausedSession.status == .pausedBySystem)
-        // sentCount should NOT have been incremented for the failed/cancelled final send
-        #expect(pausedSession.sentCount == 1)
-
-        // Wait until cancellation finishes unwinding
-        try await sessionWaitUntil {
-            appState.messages.last?.status == .cancelled
-        }
-        let cancelledMsg = try #require(appState.messages.last)
-        #expect(cancelledMsg.status == .cancelled)
-
-        // Allow network handler to proceed and unblock any waiting tasks
         barrier.unblock()
-        SessionMockURLProtocol.requestHandler = nil
 
-        // Resuming the repeat session should deliver the remaining 2nd message and complete
-        appState.resumeRepeat(pausedSession)
+        let session = try #require(appState.repeatSessions.first)
+        #expect(session.status == .completed)
+        #expect(session.sentCount == 2)
 
-        try await sessionWaitUntil {
-            appState.repeatSessions.first?.status == .completed
-        }
-
-        let completedSession = try #require(appState.repeatSessions.first)
-        #expect(completedSession.status == .completed)
-        #expect(completedSession.sentCount == 2)
+        // Give the cancelled task a chance to unwind; it must not overwrite the unknown status.
+        for _ in 0..<20 { await Task.yield() }
         let lastMsg = try #require(appState.messages.last)
-        #expect(lastMsg.status == .sent)
+        #expect(lastMsg.status == .unknown)
         #expect(lastMsg.detail == "Repeating 2/2")
+
+        appState.resumeRepeat(session)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(barrier.requestCount == 2)
     }
 
-    @Test func cancelledFinalCountdownSendLeavesSessionPausedAndResumable() async throws {
+    @Test func interruptedCountdownIntervalIsNotReplayedOnResume() async throws {
         let barrier = SessionAtomicBarrier()
         SessionMockURLProtocol.requestHandler = { _ in
             let count = barrier.incrementRequestCount()
@@ -668,6 +652,58 @@ struct SessionLifecycleTests {
             }
             return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
         }
+        defer { SessionMockURLProtocol.requestHandler = nil }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        // Announcements at t=0, 20, 40, final at 60.
+        appState.startCountdown(
+            totalDuration: 60,
+            interval: 20,
+            target: kitchen,
+            voice: .defaultPreset,
+            template: "{minutes} min left",
+            finalMessage: "Done"
+        )
+
+        // The t=20 announcement is in flight.
+        try await sessionWaitUntil {
+            barrier.requestCount >= 2
+        }
+
+        appState.handleBackgroundExpiration()
+        barrier.unblock()
+
+        let paused = try #require(appState.countdownSessions.first)
+        #expect(paused.status == .pausedBySystem)
+        #expect(appState.messages.last?.status == .unknown)
+
+        appState.resumeCountdown(paused)
+
+        try await sessionWaitUntil {
+            appState.countdownSessions.first?.status == .completed
+        }
+
+        // Resume waits for t=40 instead of replaying the t=20 announcement.
+        #expect(barrier.requestCount == 4)
+        #expect(clock.currentTime == Date(timeIntervalSince1970: 10_000 + 60))
+        let countdownMessages = appState.messages.filter { $0.kind == .countdown }
+        #expect(countdownMessages.map(\.status) == [.sent, .unknown, .sent, .sent])
+    }
+
+    @Test func interruptedFinalCountdownSendCompletesWithoutReplay() async throws {
+        let barrier = SessionAtomicBarrier()
+        SessionMockURLProtocol.requestHandler = { _ in
+            let count = barrier.incrementRequestCount()
+            if count == 2 {
+                while !barrier.canProceed {
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+            }
+            return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+        defer { SessionMockURLProtocol.requestHandler = nil }
 
         let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
@@ -682,35 +718,52 @@ struct SessionLifecycleTests {
             finalMessage: "Final Countdown Over"
         )
 
-        // Wait until final message send (request #2) is in flight
         try await sessionWaitUntil {
             barrier.requestCount >= 2
         }
 
-        // Simulate background expiration while final message is in flight
         appState.handleBackgroundExpiration()
-
-        let pausedSession = try #require(appState.countdownSessions.first)
-        #expect(pausedSession.status == .pausedBySystem)
-
-        // Unblock network handler
         barrier.unblock()
-        SessionMockURLProtocol.requestHandler = nil
 
-        // Resuming countdown should successfully deliver final message and complete
-        appState.resumeCountdown(pausedSession)
+        let session = try #require(appState.countdownSessions.first)
+        #expect(session.status == .completed)
+        #expect(session.remaining == 0)
+
+        for _ in 0..<20 { await Task.yield() }
+        let lastMsg = try #require(appState.messages.last)
+        #expect(lastMsg.status == .unknown)
+        #expect(lastMsg.text == "Final Countdown Over")
+        #expect(barrier.requestCount == 2)
+    }
+
+    @Test func countdownSendFinishingJustBeforeBoundaryDoesNotSkipAnnouncement() async throws {
+        let clock = SessionTestClock()
+        let barrier = SessionAtomicBarrier()
+        // The first send takes until 0.5ms before the t=20 announcement is due.
+        SessionMockURLProtocol.requestHandler = { _ in
+            if barrier.incrementRequestCount() == 1 {
+                clock.advance(by: 19.9995)
+            }
+            return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+        defer { SessionMockURLProtocol.requestHandler = nil }
+        let appState = makeAppState(clock: clock)
+
+        appState.startCountdown(
+            totalDuration: 60,
+            interval: 20,
+            target: kitchen,
+            voice: .defaultPreset,
+            template: "{minutes} min left",
+            finalMessage: "Done"
+        )
 
         try await sessionWaitUntil {
             appState.countdownSessions.first?.status == .completed
         }
 
-        let completedSession = try #require(appState.countdownSessions.first)
-        #expect(completedSession.status == .completed)
-        #expect(completedSession.remaining == 0)
-        let lastMsg = try #require(appState.messages.last)
-        #expect(lastMsg.status == .sent)
-        #expect(lastMsg.detail == "Final")
-        #expect(lastMsg.text == "Final Countdown Over")
+        let details = appState.messages.filter { $0.kind == .countdown }.map(\.detail)
+        #expect(details == ["1 min remaining", "1 min remaining", "1 min remaining", "Final"])
     }
 
     @Test func failedRepeatSendMarksSessionFailedAndResumable() async throws {

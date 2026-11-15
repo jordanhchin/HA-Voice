@@ -214,6 +214,8 @@ struct CountdownSession: Identifiable, Codable, Equatable {
     var remaining: TimeInterval
     var status: SessionStatus
     var inFlightMessageID: UUID? = nil
+    /// Interval announcements already made (or attempted and possibly delivered); the next is due at startedAt + announcedCount * interval.
+    var announcedCount = 0
 
     var summary: String {
         "\(Int(ceil(max(remaining, 0) / 60))) min remaining"

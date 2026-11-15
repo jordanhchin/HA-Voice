@@ -275,7 +275,7 @@ private struct MessageBubbleView: View {
         case .sent: "Sent \(record.sentAt.formatted(date: .omitted, time: .shortened))"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
-        case .unknown: "Status unknown"
+        case .unknown: "May have been announced"
         }
     }
 
