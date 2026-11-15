@@ -5,13 +5,13 @@ struct HomeAssistantClient {
 
     func testConnection(serverURL: String, token: String) async throws {
         let request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/")
-        let (_, response) = try await urlSession.data(for: request)
+        let (_, response) = try await execute(request)
         try validate(response)
     }
 
     func fetchMediaPlayers(serverURL: String, token: String) async throws -> [MediaPlayerTarget] {
         let request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/states")
-        let (data, response) = try await urlSession.data(for: request)
+        let (data, response) = try await execute(request)
         try validate(response)
         return try Self.mediaPlayers(from: data)
     }
@@ -29,7 +29,7 @@ struct HomeAssistantClient {
             withJSONObject: Self.ttsPayload(message: message, target: target, voicePreset: voicePreset),
             options: []
         )
-        let (_, response) = try await urlSession.data(for: request)
+        let (_, response) = try await execute(request)
         try validate(response)
     }
 
@@ -39,11 +39,15 @@ struct HomeAssistantClient {
             throw HomeAssistantError.invalidServerURL
         }
 
-        let withScheme = trimmed.contains("://") ? trimmed : "http://\(trimmed)"
+        let withScheme = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
         guard var components = URLComponents(string: withScheme), components.host != nil else {
             throw HomeAssistantError.invalidServerURL
         }
-        components.path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var path = components.path
+        while path.hasSuffix("/") {
+            path.removeLast()
+        }
+        components.path = path
         components.query = nil
         components.fragment = nil
 
@@ -93,6 +97,16 @@ struct HomeAssistantClient {
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
+    private func execute(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await urlSession.data(for: request)
+        } catch let urlError as URLError where urlError.code == .appTransportSecurityRequiresSecureConnection {
+            throw HomeAssistantError.insecureConnectionBlocked
+        } catch let nsError as NSError where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorAppTransportSecurityRequiresSecureConnection {
+            throw HomeAssistantError.insecureConnectionBlocked
+        }
+    }
+
     private func authorizedRequest(serverURL: String, token: String, path: String) throws -> URLRequest {
         guard Self.isValidToken(token) else {
             throw HomeAssistantError.missingToken
@@ -125,6 +139,7 @@ enum HomeAssistantError: LocalizedError, Equatable {
     case missingToken
     case invalidResponse
     case authenticationFailed
+    case insecureConnectionBlocked
     case serviceFailed(Int)
 
     var errorDescription: String? {
@@ -137,6 +152,8 @@ enum HomeAssistantError: LocalizedError, Equatable {
             "Home Assistant returned an unexpected response."
         case .authenticationFailed:
             "The Home Assistant token was rejected."
+        case .insecureConnectionBlocked:
+            "Insecure HTTP connection blocked. Remote servers require HTTPS."
         case .serviceFailed(let statusCode):
             "Home Assistant returned status \(statusCode)."
         }

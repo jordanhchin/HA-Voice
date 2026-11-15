@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 import UIKit
 
 @MainActor
@@ -505,19 +506,22 @@ final class AppState {
     private func load() {
         token = keychain.readToken()
 
-        guard let data = defaults.data(forKey: Self.persistedStateKey),
-              let state = try? JSONDecoder().decode(PersistedAppState.self, from: data)
-        else {
+        guard let data = defaults.data(forKey: Self.persistedStateKey) else {
             return
         }
 
-        serverProfile = state.serverProfile
-        senderName = state.senderName
-        selectedTargetID = state.selectedTargetID
-        selectedVoiceID = state.selectedVoiceID
-        mediaPlayers = state.mediaPlayers
-        voicePresets = Self.presetsByAddingMissingBuiltIns(to: state.voicePresets)
-        messages = state.messages
+        do {
+            let state = try JSONDecoder().decode(PersistedAppState.self, from: data)
+            serverProfile = state.serverProfile
+            senderName = state.senderName
+            selectedTargetID = state.selectedTargetID
+            selectedVoiceID = state.selectedVoiceID
+            mediaPlayers = state.mediaPlayers
+            voicePresets = Self.presetsByAddingMissingBuiltIns(to: state.voicePresets)
+            messages = state.messages
+        } catch {
+            Logger.persistence.error("Failed to decode persisted state: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private static func presetsByAddingMissingBuiltIns(to savedPresets: [VoicePreset]) -> [VoicePreset] {
@@ -538,8 +542,11 @@ final class AppState {
             voicePresets: voicePresets,
             messages: Array(messages.suffix(200))
         )
-        if let data = try? JSONEncoder().encode(state) {
+        do {
+            let data = try JSONEncoder().encode(state)
             defaults.set(data, forKey: Self.persistedStateKey)
+        } catch {
+            Logger.persistence.error("Failed to encode persisted state: \(error.localizedDescription, privacy: .public)")
         }
     }
 

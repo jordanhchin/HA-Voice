@@ -566,11 +566,16 @@ private struct SetupView: View {
     var body: some View {
         Form {
             Section {
-                TextField("http://homeassistant.local:8123", text: $serverURL)
+                TextField("https://homeassistant.local:8123", text: $serverURL)
                     .textContentType(.URL)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                 SecureField("Long-lived access token", text: $token)
+                if serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("http://") {
+                    Label("Insecure HTTP connection: Token is sent over the network in cleartext.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             } header: {
                 Text("Home Assistant")
             } footer: {
@@ -608,6 +613,9 @@ private struct SetupView: View {
             QRCodeScannerView { rawValue in
                 if let scannedToken = QRTokenParser.token(from: rawValue) {
                     token = scannedToken
+                    appState.setupError = nil
+                } else {
+                    appState.setupError = "Scanned QR code does not contain a valid token."
                 }
             }
         }
@@ -840,6 +848,15 @@ private struct SettingsView: View {
     @State private var connectionSucceeded = false
     @State private var showingClearHistoryConfirmation = false
 
+    private var isHTTPConnection: Bool {
+        let current = serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if current.hasPrefix("http://") { return true }
+        if current.isEmpty && appState.serverProfile.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("http://") {
+            return true
+        }
+        return false
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -848,6 +865,11 @@ private struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
                     SecureField("Long-lived access token", text: $token)
+                    if isHTTPConnection {
+                        Label("Insecure HTTP connection: Token is sent over the network in cleartext.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     Button {
                         showingTokenScanner = true
                     } label: {
@@ -935,6 +957,9 @@ private struct SettingsView: View {
                 QRCodeScannerView { rawValue in
                     if let scannedToken = QRTokenParser.token(from: rawValue) {
                         token = scannedToken
+                        appState.setupError = nil
+                    } else {
+                        appState.setupError = "Scanned QR code does not contain a valid token."
                     }
                 }
             }

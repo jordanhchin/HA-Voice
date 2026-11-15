@@ -20,7 +20,24 @@ enum QRTokenParser {
             return urlToken
         }
 
-        return trimmed
+        if isJWT(trimmed) {
+            return trimmed
+        }
+
+        return nil
+    }
+
+    static func isJWT(_ string: String) -> Bool {
+        let parts = string.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_=")
+        for part in parts {
+            guard !part.isEmpty else { return false }
+            if part.unicodeScalars.contains(where: { !allowed.contains($0) }) {
+                return false
+            }
+        }
+        return true
     }
 
     private static func tokenFromJSON(_ rawValue: String) -> String? {

@@ -11,7 +11,7 @@ struct HA_VoiceTests {
 
     @Test func normalizesServerURL() throws {
         let url = try HomeAssistantClient.normalizedBaseURL("homeassistant.local:8123/")
-        #expect(url.absoluteString == "http://homeassistant.local:8123")
+        #expect(url.absoluteString == "https://homeassistant.local:8123")
     }
 
     @Test func validatesToken() {
@@ -101,7 +101,9 @@ struct HA_VoiceTests {
     }
 
     @Test func qrTokenParserAcceptsRawToken() {
-        #expect(QRTokenParser.token(from: "  raw-token-value  ") == "raw-token-value")
+        let validJWT = "header123.payload456.signature789"
+        #expect(QRTokenParser.token(from: "  \(validJWT)  ") == validJWT)
+        #expect(QRTokenParser.token(from: "  raw-token-value  ") == nil)
     }
 
     @Test func qrTokenParserExtractsJSONToken() {
