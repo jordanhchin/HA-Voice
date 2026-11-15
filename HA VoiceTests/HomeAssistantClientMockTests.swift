@@ -291,6 +291,27 @@ struct HomeAssistantClientMockTests {
         }
     }
 
+    @Test(arguments: [URLError.Code.cannotFindHost, .timedOut, .networkConnectionLost])
+    func dnsOrTimeoutFailureOnSchemelessHostDoesNotSuggestHTTP(code: URLError.Code) async {
+        let token = "test-token-dns-schemeless-\(code.rawValue)"
+        ClientMockURLProtocol.setHandler(forToken: token) { _ in
+            throw URLError(code)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        do {
+            try await client.testConnection(serverURL: "homeassitant.local:8123", token: token)
+            #expect(Bool(false), "Expected an error to be thrown")
+        } catch let error as HomeAssistantError {
+            if case .secureConnectionFailed = error {
+                #expect(Bool(false), "DNS/timeout failures must not suggest http://")
+            }
+        } catch {
+            // Non-HomeAssistantError network failures are fine; they carry no http suggestion.
+        }
+    }
+
     @Test func connectionFailureOnSchemelessHostWithSlashSuggestsHTTPWithoutTrailingSlash() async {
         let token = "test-token-conn-schemeless"
         ClientMockURLProtocol.setHandler(forToken: token) { _ in

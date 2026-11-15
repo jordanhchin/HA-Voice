@@ -144,9 +144,6 @@ struct HomeAssistantClient {
              NSURLErrorClientCertificateRejected,
              NSURLErrorClientCertificateRequired,
              NSURLErrorCannotConnectToHost,
-             NSURLErrorNetworkConnectionLost,
-             NSURLErrorTimedOut,
-             NSURLErrorCannotFindHost,
              -1206 ... -1200:
             return true
         default:
