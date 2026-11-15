@@ -20,6 +20,8 @@ final class AppState {
     var deviceError: String?
     var backgroundWarning: String?
 
+    static let countdownStalenessCutoff: TimeInterval = 5 * 60
+
     private let client: HomeAssistantClient
     private let keychain: KeychainTokenStore
     private let defaults: UserDefaults
@@ -27,6 +29,7 @@ final class AppState {
     private let sleep: @Sendable (TimeInterval) async throws -> Void
     private var repeatTasks: [UUID: Task<Void, Never>] = [:]
     private var countdownTasks: [UUID: Task<Void, Never>] = [:]
+    private var sessionInFlightMessageIDs: [UUID: UUID] = [:]
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     init(
@@ -290,10 +293,15 @@ final class AppState {
     func stopRepeat(_ session: RepeatSession) {
         repeatTasks[session.id]?.cancel()
         repeatTasks[session.id] = nil
+        let inFlightMessageID = sessionInFlightMessageIDs[session.id]
+            ?? repeatSessions.first(where: { $0.id == session.id })?.inFlightMessageID
+            ?? session.inFlightMessageID
+        sessionInFlightMessageIDs[session.id] = nil
         repeatSessions.removeAll { $0.id == session.id }
-        if let lastIndex = messages.indices.reversed().first(where: { messages[$0].status == .sending && messages[$0].kind == .repeated }) {
-            messages[lastIndex].status = .cancelled
-            messages[lastIndex].errorMessage = nil
+        if let inFlightMessageID,
+           let index = messages.firstIndex(where: { $0.id == inFlightMessageID && $0.status == .sending }) {
+            messages[index].status = .cancelled
+            messages[index].errorMessage = nil
             persist()
         }
     }
@@ -301,10 +309,15 @@ final class AppState {
     func stopCountdown(_ session: CountdownSession) {
         countdownTasks[session.id]?.cancel()
         countdownTasks[session.id] = nil
+        let inFlightMessageID = sessionInFlightMessageIDs[session.id]
+            ?? countdownSessions.first(where: { $0.id == session.id })?.inFlightMessageID
+            ?? session.inFlightMessageID
+        sessionInFlightMessageIDs[session.id] = nil
         countdownSessions.removeAll { $0.id == session.id }
-        if let lastIndex = messages.indices.reversed().first(where: { messages[$0].status == .sending && messages[$0].kind == .countdown }) {
-            messages[lastIndex].status = .cancelled
-            messages[lastIndex].errorMessage = nil
+        if let inFlightMessageID,
+           let index = messages.firstIndex(where: { $0.id == inFlightMessageID && $0.status == .sending }) {
+            messages[index].status = .cancelled
+            messages[index].errorMessage = nil
             persist()
         }
     }
@@ -326,6 +339,29 @@ final class AppState {
         guard let index = countdownSessions.firstIndex(where: { $0.id == session.id }),
               countdownSessions[index].status == .pausedBySystem else { return }
 
+        let elapsed = now().timeIntervalSince(session.startedAt)
+        let overdue = elapsed - session.totalDuration
+
+        if overdue > Self.countdownStalenessCutoff {
+            countdownSessions[index].remaining = 0
+            countdownSessions[index].status = .expired
+            messages.append(
+                MessageRecord(
+                    id: UUID(),
+                    text: session.finalMessage,
+                    target: session.target,
+                    voicePreset: session.voicePreset,
+                    sentAt: now(),
+                    status: .cancelled,
+                    errorMessage: nil,
+                    kind: .countdown,
+                    detail: "Expired – not announced"
+                )
+            )
+            persist()
+            return
+        }
+
         countdownSessions[index].status = .running
         runCountdownSession(session.id)
     }
@@ -344,17 +380,32 @@ final class AppState {
         repeatSessions.contains { $0.status == .running } || countdownSessions.contains { $0.status == .running }
     }
 
+    @discardableResult
     private func sendMessage(
         _ text: String,
         target: MediaPlayerTarget,
         voice: VoicePreset,
         kind: MessageKind,
-        detail: String?
-    ) async {
+        detail: String?,
+        sessionID: UUID? = nil
+    ) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
 
         let id = UUID()
+        if let sessionID {
+            sessionInFlightMessageIDs[sessionID] = id
+            updateRepeatSession(sessionID) { $0.inFlightMessageID = id }
+            updateCountdownSession(sessionID) { $0.inFlightMessageID = id }
+        }
+        defer {
+            if let sessionID {
+                sessionInFlightMessageIDs[sessionID] = nil
+                updateRepeatSession(sessionID) { $0.inFlightMessageID = nil }
+                updateCountdownSession(sessionID) { $0.inFlightMessageID = nil }
+            }
+        }
+
         messages.append(
             MessageRecord(
                 id: id,
@@ -379,9 +430,12 @@ final class AppState {
                 voicePreset: voice
             )
             updateMessage(id) {
-                $0.status = .sent
-                $0.errorMessage = nil
+                if $0.status != .cancelled {
+                    $0.status = .sent
+                    $0.errorMessage = nil
+                }
             }
+            return true
         } catch {
             updateMessage(id) {
                 if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
@@ -392,6 +446,7 @@ final class AppState {
                     $0.errorMessage = error.localizedDescription
                 }
             }
+            return false
         }
     }
 
@@ -431,9 +486,35 @@ final class AppState {
                     break
                 }
 
+                let nextCount = session.sentCount + 1
+                let detail: String
+                switch session.limit {
+                case .count(let count):
+                    detail = "Repeating \(nextCount)/\(count)"
+                case .duration(let duration):
+                    detail = "Repeating for \(Int(duration / 60)) min"
+                case .indefinitely:
+                    detail = "Repeating until stopped"
+                }
+
+                let sendSucceeded = await self.sendMessage(
+                    session.message,
+                    target: session.target,
+                    voice: session.voicePreset,
+                    kind: .repeated,
+                    detail: detail,
+                    sessionID: id
+                )
+
+                if Task.isCancelled {
+                    break
+                }
+
+                guard sendSucceeded else {
+                    break
+                }
+
                 self.incrementRepeatSession(id)
-                let detail = self.repeatSessions.first(where: { $0.id == id })?.summary
-                await self.sendMessage(session.message, target: session.target, voice: session.voicePreset, kind: .repeated, detail: detail)
 
                 if self.shouldCompleteRepeat(id) {
                     self.updateRepeatSession(id) { $0.status = .completed }
@@ -488,26 +569,86 @@ final class AppState {
 
             while !Task.isCancelled {
                 guard let session = self.countdownSessions.first(where: { $0.id == id }) else { return }
-                let elapsed = self.now().timeIntervalSince(session.startedAt)
+                let deadline = session.startedAt.addingTimeInterval(session.totalDuration)
+                let now = self.now()
+                let elapsed = now.timeIntervalSince(session.startedAt)
                 let remaining = session.totalDuration - elapsed
 
                 if remaining <= 0 {
-                    await self.sendMessage(session.finalMessage, target: session.target, voice: session.voicePreset, kind: .countdown, detail: "Final")
-                    self.updateCountdownSession(id) {
-                        $0.remaining = 0
-                        $0.status = .completed
+                    let overdue = now.timeIntervalSince(deadline)
+                    if overdue > Self.countdownStalenessCutoff {
+                        self.updateCountdownSession(id) {
+                            $0.remaining = 0
+                            $0.status = .expired
+                        }
+                        self.messages.append(
+                            MessageRecord(
+                                id: UUID(),
+                                text: session.finalMessage,
+                                target: session.target,
+                                voicePreset: session.voicePreset,
+                                sentAt: self.now(),
+                                status: .cancelled,
+                                errorMessage: nil,
+                                kind: .countdown,
+                                detail: "Expired – not announced"
+                            )
+                        )
+                        self.persist()
+                        break
+                    }
+
+                    let sendSucceeded = await self.sendMessage(
+                        session.finalMessage,
+                        target: session.target,
+                        voice: session.voicePreset,
+                        kind: .countdown,
+                        detail: "Final",
+                        sessionID: id
+                    )
+
+                    if Task.isCancelled {
+                        break
+                    }
+
+                    if sendSucceeded {
+                        self.updateCountdownSession(id) {
+                            $0.remaining = 0
+                            $0.status = .completed
+                        }
                     }
                     break
                 }
 
                 let minutes = max(Int(ceil(remaining / 60)), 0)
                 let message = Self.countdownMessage(template: session.template, remaining: remaining)
-                await self.sendMessage(message, target: session.target, voice: session.voicePreset, kind: .countdown, detail: "\(minutes) min remaining")
-                self.updateCountdownSession(id) {
-                    $0.remaining = max(remaining, 0)
+                let sendSucceeded = await self.sendMessage(
+                    message,
+                    target: session.target,
+                    voice: session.voicePreset,
+                    kind: .countdown,
+                    detail: "\(minutes) min remaining",
+                    sessionID: id
+                )
+
+                if Task.isCancelled {
+                    break
                 }
 
-                let sleepDuration = min(session.interval, remaining)
+                guard sendSucceeded else {
+                    break
+                }
+
+                self.updateCountdownSession(id) {
+                    $0.remaining = max(deadline.timeIntervalSince(self.now()), 0)
+                }
+
+                let currentElapsed = self.now().timeIntervalSince(session.startedAt)
+                let intervalsPassed = floor((currentElapsed + 0.001) / session.interval)
+                let nextIntervalTime = session.startedAt.addingTimeInterval((intervalsPassed + 1) * session.interval)
+                let nextTarget = min(nextIntervalTime, deadline)
+                let sleepDuration = max(nextTarget.timeIntervalSince(self.now()), 0)
+
                 do {
                     try await self.sleep(sleepDuration)
                 } catch {

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HA_Voice
 
-final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+final class SessionMockURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestHandler: ((URLRequest) async throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -31,7 +31,7 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
-final class TestClock: @unchecked Sendable {
+final class SessionTestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var _currentTime: Date
     private var _sleepDurations: [TimeInterval] = []
@@ -71,16 +71,41 @@ final class TestClock: @unchecked Sendable {
     }
 }
 
-private struct TimeoutError: Error {}
+private struct SessionTimeoutError: Error {}
 
 @MainActor
-private func waitUntil(timeout: TimeInterval = 2.0, condition: @MainActor () -> Bool) async throws {
+private func sessionWaitUntil(timeout: TimeInterval = 2.0, condition: @MainActor () -> Bool) async throws {
     let start = Date()
     while !condition() {
         if Date().timeIntervalSince(start) > timeout {
-            throw TimeoutError()
+            throw SessionTimeoutError()
         }
         await Task.yield()
+    }
+}
+
+private final class SessionAtomicBarrier: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requestCount: Int = 0
+    private var _isUnblocked = false
+
+    var requestCount: Int {
+        lock.withLock { _requestCount }
+    }
+
+    func incrementRequestCount() -> Int {
+        lock.withLock {
+            _requestCount += 1
+            return _requestCount
+        }
+    }
+
+    func unblock() {
+        lock.withLock { _isUnblocked = true }
+    }
+
+    var canProceed: Bool {
+        lock.withLock { _isUnblocked }
     }
 }
 
@@ -93,9 +118,9 @@ struct SessionLifecycleTests {
         state: "idle"
     )
 
-    private func makeAppState(clock: TestClock) -> AppState {
+    private func makeAppState(clock: SessionTestClock) -> AppState {
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
+        config.protocolClasses = [SessionMockURLProtocol.self]
         let client = HomeAssistantClient(urlSession: URLSession(configuration: config))
         let defaults = UserDefaults(suiteName: "SessionLifecycleTests-\(UUID().uuidString)")!
 
@@ -116,8 +141,8 @@ struct SessionLifecycleTests {
     // MARK: - Bug 1: Countdown Timing
 
     @Test func countdownDivisibleIntervalScheduleAndFinalMessageTiming() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         // 10 minutes total, 5 minutes interval -> divisible
@@ -130,7 +155,7 @@ struct SessionLifecycleTests {
             finalMessage: "It's time to go."
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.countdownSessions.first?.status == .completed
         }
 
@@ -152,8 +177,8 @@ struct SessionLifecycleTests {
     }
 
     @Test func countdownNonDivisibleIntervalScheduleAndFinalMessageTiming() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         // 10 minutes total, 4 minutes interval -> non-divisible
@@ -166,7 +191,7 @@ struct SessionLifecycleTests {
             finalMessage: "It's time to go."
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.countdownSessions.first?.status == .completed
         }
 
@@ -186,11 +211,11 @@ struct SessionLifecycleTests {
     // MARK: - Bug 3: Cancellation Status
 
     @Test func cancellationMidSendRecordsCancelledStatus() async throws {
-        MockURLProtocol.requestHandler = { _ in
+        SessionMockURLProtocol.requestHandler = { _ in
             throw URLError(.cancelled)
         }
 
-        let clock = TestClock()
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         appState.startRepeat(
@@ -201,7 +226,7 @@ struct SessionLifecycleTests {
             limit: .count(3)
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             !appState.messages.isEmpty && appState.messages.first?.status != .sending
         }
 
@@ -211,12 +236,12 @@ struct SessionLifecycleTests {
     }
 
     @Test func stoppingRepeatMidSendMarksMessageCancelled() async throws {
-        MockURLProtocol.requestHandler = { _ in
+        SessionMockURLProtocol.requestHandler = { _ in
             try await Task.sleep(for: .milliseconds(500))
             return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
         }
 
-        let clock = TestClock()
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         appState.startRepeat(
@@ -227,14 +252,14 @@ struct SessionLifecycleTests {
             limit: .count(3)
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.messages.first?.status == .sending
         }
 
         let session = try #require(appState.repeatSessions.first)
         appState.stopRepeat(session)
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             !appState.messages.isEmpty && appState.messages.first?.status != .sending
         }
 
@@ -244,12 +269,12 @@ struct SessionLifecycleTests {
     }
 
     @Test func stoppingCountdownMidSendMarksMessageCancelled() async throws {
-        MockURLProtocol.requestHandler = { _ in
+        SessionMockURLProtocol.requestHandler = { _ in
             try await Task.sleep(for: .milliseconds(500))
             return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
         }
 
-        let clock = TestClock()
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         appState.startCountdown(
@@ -261,14 +286,14 @@ struct SessionLifecycleTests {
             finalMessage: "Done."
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.messages.first?.status == .sending
         }
 
         let session = try #require(appState.countdownSessions.first)
         appState.stopCountdown(session)
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             !appState.messages.isEmpty && appState.messages.first?.status != .sending
         }
 
@@ -280,8 +305,8 @@ struct SessionLifecycleTests {
     // MARK: - Bug 4: Repeat Message Detail Computed Per Send
 
     @Test func repeatMessageDetailComputedPerSend() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         appState.startRepeat(
@@ -292,7 +317,7 @@ struct SessionLifecycleTests {
             limit: .count(3)
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.repeatSessions.first?.status == .completed
         }
 
@@ -302,8 +327,8 @@ struct SessionLifecycleTests {
     }
 
     @Test func repeatByDurationCompletionRules() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         // 60 seconds duration, 25 seconds interval
@@ -315,7 +340,7 @@ struct SessionLifecycleTests {
             limit: .duration(60)
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.repeatSessions.first?.status == .completed
         }
 
@@ -328,8 +353,8 @@ struct SessionLifecycleTests {
     // MARK: - Bug 2: Background Expiry, Paused Lifecycle, Resume, and Stop
 
     @Test func backgroundExpiryPausesSessionsAndCancelsTasks() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         var pausedDuringSleep = false
@@ -351,7 +376,7 @@ struct SessionLifecycleTests {
             finalMessage: "Done."
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             pausedDuringSleep && appState.countdownSessions.first?.status == .pausedBySystem
         }
 
@@ -371,8 +396,8 @@ struct SessionLifecycleTests {
     }
 
     @Test func resumeCountdownBeforeDeadlineContinuesFromRealElapsedTime() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         var didPause = false
@@ -394,7 +419,7 @@ struct SessionLifecycleTests {
             finalMessage: "Done."
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             didPause && appState.countdownSessions.first?.status == .pausedBySystem
         }
 
@@ -406,7 +431,7 @@ struct SessionLifecycleTests {
 
         appState.resumeCountdown(pausedSession)
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.countdownSessions.first?.status == .completed
         }
 
@@ -419,8 +444,8 @@ struct SessionLifecycleTests {
     }
 
     @Test func resumeCountdownAfterDeadlineSendsOnlyFinalMessage() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         var didPause = false
@@ -442,20 +467,21 @@ struct SessionLifecycleTests {
             finalMessage: "Done."
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             didPause && appState.countdownSessions.first?.status == .pausedBySystem
         }
 
         let pausedSession = try #require(appState.countdownSessions.first)
         clock.onSleep = nil
 
-        // Advance past deadline (e.g. 500s elapsed since sleep at t=300 -> total 800s > 600s)
-        clock.advance(by: 500)
+        // Paused at t=300 (deadline is t=600).
+        // Advance past deadline (400s -> total 700s, 100s past deadline <= 300s cutoff)
+        clock.advance(by: 400)
         let messagesBeforeResume = appState.messages.count
 
         appState.resumeCountdown(pausedSession)
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             appState.countdownSessions.first?.status == .completed
         }
 
@@ -468,8 +494,8 @@ struct SessionLifecycleTests {
     }
 
     @Test func stopPausedSessionRemovesItFromActiveSessions() async throws {
-        MockURLProtocol.requestHandler = nil
-        let clock = TestClock()
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
         let appState = makeAppState(clock: clock)
 
         var didPause = false
@@ -490,7 +516,7 @@ struct SessionLifecycleTests {
             limit: .count(5)
         )
 
-        try await waitUntil {
+        try await sessionWaitUntil {
             didPause && appState.repeatSessions.first?.status == .pausedBySystem
         }
 
@@ -500,5 +526,339 @@ struct SessionLifecycleTests {
         appState.stopRepeat(pausedSession)
         #expect(appState.activeRepeatSessions.isEmpty)
         #expect(appState.repeatSessions.isEmpty)
+    }
+
+    // MARK: - Round 2 Integration Review Tests
+
+    @Test func stoppingOneRepeatSessionLeavesConcurrentRepeatSessionIntact() async throws {
+        let barrier = SessionAtomicBarrier()
+        SessionMockURLProtocol.requestHandler = { _ in
+            _ = barrier.incrementRequestCount()
+            while !barrier.canProceed {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        appState.startRepeat(
+            message: "Session Alpha",
+            target: kitchen,
+            voice: .defaultPreset,
+            interval: 10,
+            limit: .count(3)
+        )
+        appState.startRepeat(
+            message: "Session Beta",
+            target: kitchen,
+            voice: .defaultPreset,
+            interval: 10,
+            limit: .count(3)
+        )
+
+        try await sessionWaitUntil {
+            barrier.requestCount >= 2
+        }
+
+        let alphaSession = try #require(appState.repeatSessions.first(where: { $0.message == "Session Alpha" }))
+        let betaSession = try #require(appState.repeatSessions.first(where: { $0.message == "Session Beta" }))
+
+        // Stop Alpha session while both are in-flight
+        appState.stopRepeat(alphaSession)
+
+        // Alpha message should be cancelled immediately
+        let alphaMessage = try #require(appState.messages.first(where: { $0.text == "Session Alpha" }))
+        #expect(alphaMessage.status == .cancelled)
+        #expect(!appState.repeatSessions.contains { $0.id == alphaSession.id })
+
+        // Beta message should still be sending and Beta session still running
+        let betaMessageBefore = try #require(appState.messages.first(where: { $0.text == "Session Beta" }))
+        #expect(betaMessageBefore.status == .sending)
+        #expect(appState.repeatSessions.contains { $0.id == betaSession.id })
+
+        // Now allow network completion
+        barrier.unblock()
+
+        try await sessionWaitUntil {
+            appState.messages.first(where: { $0.text == "Session Beta" })?.status == .sent
+        }
+
+        let betaMessageAfter = try #require(appState.messages.first(where: { $0.text == "Session Beta" }))
+        #expect(betaMessageAfter.status == .sent)
+        #expect(appState.repeatSessions.contains { $0.id == betaSession.id })
+
+        // Clean up Beta session
+        if let currentBeta = appState.repeatSessions.first(where: { $0.id == betaSession.id }) {
+            appState.stopRepeat(currentBeta)
+        }
+    }
+
+    @Test func cancelledFinalRepeatSendLeavesSessionPausedAndResumable() async throws {
+        let barrier = SessionAtomicBarrier()
+        SessionMockURLProtocol.requestHandler = { _ in
+            let count = barrier.incrementRequestCount()
+            if count == 2 {
+                while !barrier.canProceed {
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+            }
+            return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        appState.startRepeat(
+            message: "Oven check",
+            target: kitchen,
+            voice: .defaultPreset,
+            interval: 10,
+            limit: .count(2)
+        )
+
+        // Wait until final send attempt (request #2) is in flight
+        try await sessionWaitUntil {
+            barrier.requestCount >= 2
+        }
+
+        // Simulate background expiration while final send is in flight
+        appState.handleBackgroundExpiration()
+
+        let pausedSession = try #require(appState.repeatSessions.first)
+        #expect(pausedSession.status == .pausedBySystem)
+        // sentCount should NOT have been incremented for the failed/cancelled final send
+        #expect(pausedSession.sentCount == 1)
+
+        // Wait until cancellation finishes unwinding
+        try await sessionWaitUntil {
+            appState.messages.last?.status == .cancelled
+        }
+        let cancelledMsg = try #require(appState.messages.last)
+        #expect(cancelledMsg.status == .cancelled)
+
+        // Allow network handler to proceed and unblock any waiting tasks
+        barrier.unblock()
+        SessionMockURLProtocol.requestHandler = nil
+
+        // Resuming the repeat session should deliver the remaining 2nd message and complete
+        appState.resumeRepeat(pausedSession)
+
+        try await sessionWaitUntil {
+            appState.repeatSessions.first?.status == .completed
+        }
+
+        let completedSession = try #require(appState.repeatSessions.first)
+        #expect(completedSession.status == .completed)
+        #expect(completedSession.sentCount == 2)
+        let lastMsg = try #require(appState.messages.last)
+        #expect(lastMsg.status == .sent)
+        #expect(lastMsg.detail == "Repeating 2/2")
+    }
+
+    @Test func cancelledFinalCountdownSendLeavesSessionPausedAndResumable() async throws {
+        let barrier = SessionAtomicBarrier()
+        SessionMockURLProtocol.requestHandler = { _ in
+            let count = barrier.incrementRequestCount()
+            if count == 2 {
+                while !barrier.canProceed {
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+            }
+            return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        // 20s total, 20s interval -> 1 interval send at t=0, then final send at t=20
+        appState.startCountdown(
+            totalDuration: 20,
+            interval: 20,
+            target: kitchen,
+            voice: .defaultPreset,
+            template: "{minutes} min left",
+            finalMessage: "Final Countdown Over"
+        )
+
+        // Wait until final message send (request #2) is in flight
+        try await sessionWaitUntil {
+            barrier.requestCount >= 2
+        }
+
+        // Simulate background expiration while final message is in flight
+        appState.handleBackgroundExpiration()
+
+        let pausedSession = try #require(appState.countdownSessions.first)
+        #expect(pausedSession.status == .pausedBySystem)
+
+        // Unblock network handler
+        barrier.unblock()
+        SessionMockURLProtocol.requestHandler = nil
+
+        // Resuming countdown should successfully deliver final message and complete
+        appState.resumeCountdown(pausedSession)
+
+        try await sessionWaitUntil {
+            appState.countdownSessions.first?.status == .completed
+        }
+
+        let completedSession = try #require(appState.countdownSessions.first)
+        #expect(completedSession.status == .completed)
+        #expect(completedSession.remaining == 0)
+        let lastMsg = try #require(appState.messages.last)
+        #expect(lastMsg.status == .sent)
+        #expect(lastMsg.detail == "Final")
+        #expect(lastMsg.text == "Final Countdown Over")
+    }
+
+    @Test func countdownDriftCompensationUnderSendLatency() async throws {
+        let clock = SessionTestClock()
+        // Simulate 5 seconds latency on every TTS send
+        SessionMockURLProtocol.requestHandler = { _ in
+            clock.advance(by: 5)
+            return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        let appState = makeAppState(clock: clock)
+
+        // 60 seconds total, 20 seconds interval
+        // Sends at t=0, t=20, t=40, and final at t=60.
+        // Each send advances clock by 5s.
+        // With drift compensation, sleep durations should be:
+        // after t=0 (returns at t=5): next target t=20 -> sleeps 15s
+        // after t=20 (returns at t=25): next target t=40 -> sleeps 15s
+        // after t=40 (returns at t=45): next target t=60 -> sleeps 15s
+        // at t=60: final send occurs, completing the session.
+        appState.startCountdown(
+            totalDuration: 60,
+            interval: 20,
+            target: kitchen,
+            voice: .defaultPreset,
+            template: "{minutes} min left",
+            finalMessage: "Time is up!"
+        )
+
+        try await sessionWaitUntil {
+            appState.countdownSessions.first?.status == .completed
+        }
+
+        #expect(clock.sleepDurations == [15, 15, 15])
+        #expect(appState.messages.count == 4)
+        #expect(appState.messages.map(\.detail) == ["1 min remaining", "1 min remaining", "1 min remaining", "Final"])
+    }
+
+    @Test func resumeCountdownAtDeadlinePlusFourMinutesAnnouncesFinalMessage() async throws {
+        SessionMockURLProtocol.requestHandler = nil
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        var didPause = false
+        clock.onSleep = { _ in
+            if !didPause {
+                didPause = true
+                Task { @MainActor in
+                    appState.handleBackgroundExpiration()
+                }
+            }
+        }
+
+        appState.startCountdown(
+            totalDuration: 600,
+            interval: 300,
+            target: kitchen,
+            voice: .defaultPreset,
+            template: "{minutes} min remaining",
+            finalMessage: "Time to leave!"
+        )
+
+        try await sessionWaitUntil {
+            didPause && appState.countdownSessions.first?.status == .pausedBySystem
+        }
+
+        let pausedSession = try #require(appState.countdownSessions.first)
+        clock.onSleep = nil
+
+        // Paused at t=300 (deadline is t=600).
+        // Advance by 300s + 240s (4 minutes past deadline = 540s total advance)
+        clock.advance(by: 540)
+
+        let messageCountBefore = appState.messages.count
+        appState.resumeCountdown(pausedSession)
+
+        try await sessionWaitUntil {
+            appState.countdownSessions.first?.status == .completed
+        }
+
+        // Final message announced because overdue (4 min) <= 5 min staleness cutoff
+        #expect(appState.messages.count == messageCountBefore + 1)
+        let lastMessage = try #require(appState.messages.last)
+        #expect(lastMessage.detail == "Final")
+        #expect(lastMessage.text == "Time to leave!")
+        #expect(lastMessage.status == .sent)
+        #expect(appState.countdownSessions.first?.remaining == 0)
+    }
+
+    @Test func resumeCountdownAtDeadlinePlusSixMinutesExpiresWithoutAnnouncement() async throws {
+        var networkRequestMade = false
+        SessionMockURLProtocol.requestHandler = { _ in
+            networkRequestMade = true
+            return (HTTPURLResponse(url: URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+
+        var didPause = false
+        clock.onSleep = { _ in
+            if !didPause {
+                didPause = true
+                Task { @MainActor in
+                    appState.handleBackgroundExpiration()
+                }
+            }
+        }
+
+        appState.startCountdown(
+            totalDuration: 600,
+            interval: 300,
+            target: kitchen,
+            voice: .defaultPreset,
+            template: "{minutes} min remaining",
+            finalMessage: "Time to leave!"
+        )
+
+        try await sessionWaitUntil {
+            didPause && appState.countdownSessions.first?.status == .pausedBySystem
+        }
+
+        let pausedSession = try #require(appState.countdownSessions.first)
+        clock.onSleep = nil
+        networkRequestMade = false
+
+        // Paused at t=300 (deadline is t=600).
+        // Advance by 300s + 360s (6 minutes past deadline = 660s total advance)
+        clock.advance(by: 660)
+
+        appState.resumeCountdown(pausedSession)
+
+        try await sessionWaitUntil {
+            appState.countdownSessions.first?.status == .expired
+        }
+
+        // No network request made because overdue (6 min) > 5 min staleness cutoff
+        #expect(!networkRequestMade)
+
+        let session = try #require(appState.countdownSessions.first)
+        #expect(session.status == .expired)
+        #expect(session.remaining == 0)
+
+        // History record logged with .cancelled and "Expired – not announced"
+        let lastMessage = try #require(appState.messages.last)
+        #expect(lastMessage.status == .cancelled)
+        #expect(lastMessage.kind == .countdown)
+        #expect(lastMessage.detail == "Expired – not announced")
+        #expect(lastMessage.text == "Time to leave!")
     }
 }
