@@ -10,7 +10,8 @@ final class AppState {
     var senderName = ""
     var token = ""
     var mediaPlayers: [MediaPlayerTarget] = []
-    var selectedTargetID: String?
+    var ttsEngines: [TTSEngine] = []
+    var selectedTargetIDs: [String] = []
     var voicePresets: [VoicePreset] = VoicePreset.builtIns
     var selectedVoiceID: UUID = VoicePreset.defaultPreset.id
     var messages: [MessageRecord] = []
@@ -69,14 +70,49 @@ final class AppState {
         !serverProfile.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && HomeAssistantClient.isValidToken(token)
     }
 
-    var selectedTarget: MediaPlayerTarget? {
+    var selectedTargets: [MediaPlayerTarget] {
         get {
-            mediaPlayers.first { $0.entityID == selectedTargetID } ?? mediaPlayers.first
+            let byID = Dictionary(uniqueKeysWithValues: mediaPlayers.map { ($0.entityID, $0) })
+            return PersistedAppState.uniqueTargetIDs(selectedTargetIDs).compactMap { byID[$0] }
         }
         set {
-            selectedTargetID = newValue?.entityID
+            selectedTargetIDs = PersistedAppState.uniqueTargetIDs(newValue.map(\.entityID))
             persist()
         }
+    }
+
+    func isTargetSelected(_ target: MediaPlayerTarget) -> Bool {
+        selectedTargetIDs.contains(target.entityID)
+    }
+
+    func toggleTargetSelection(_ target: MediaPlayerTarget) {
+        let currentIDs = PersistedAppState.uniqueTargetIDs(selectedTargetIDs)
+        if currentIDs.contains(target.entityID) {
+            let validSelected = selectedTargets.map(\.entityID)
+            guard validSelected.count > 1 else { return }
+            selectedTargetIDs = currentIDs.filter { $0 != target.entityID }
+        } else {
+            selectedTargetIDs = PersistedAppState.uniqueTargetIDs(currentIDs + [target.entityID])
+        }
+        persist()
+    }
+
+    func selectAllTargets() {
+        let currentIDs = PersistedAppState.uniqueTargetIDs(selectedTargetIDs)
+        let allIDs = mediaPlayers.map(\.entityID)
+        selectedTargetIDs = PersistedAppState.uniqueTargetIDs(currentIDs + allIDs)
+        persist()
+    }
+
+    func clearTargetSelection() {
+        if let firstSelected = selectedTargets.first {
+            selectedTargetIDs = [firstSelected.entityID]
+        } else if let firstPlayer = mediaPlayers.first {
+            selectedTargetIDs = [firstPlayer.entityID]
+        } else {
+            selectedTargetIDs = []
+        }
+        persist()
     }
 
     var selectedVoice: VoicePreset {
@@ -178,9 +214,21 @@ final class AppState {
         defer { isRefreshingDevices = false }
 
         do {
-            mediaPlayers = try await client.fetchMediaPlayers(serverURL: serverProfile.serverURL, token: token)
-            if selectedTargetID == nil || !mediaPlayers.contains(where: { $0.entityID == selectedTargetID }) {
-                selectedTargetID = mediaPlayers.first?.entityID
+            let discovered = try await client.fetchMediaPlayersAndEngines(
+                serverURL: serverProfile.serverURL,
+                token: token
+            )
+            mediaPlayers = discovered.mediaPlayers
+            ttsEngines = discovered.ttsEngines
+
+            let validIDs = Set(mediaPlayers.map(\.entityID))
+            let surviving = PersistedAppState.uniqueTargetIDs(selectedTargetIDs).filter { validIDs.contains($0) }
+            if !surviving.isEmpty {
+                selectedTargetIDs = surviving
+            } else if let firstID = mediaPlayers.first?.entityID {
+                selectedTargetIDs = [firstID]
+            } else {
+                selectedTargetIDs = []
             }
             persist()
         } catch {
@@ -199,33 +247,34 @@ final class AppState {
         countdownTemplate: String,
         finalMessage: String
     ) {
-        guard let target = selectedTarget else { return }
+        let targets = selectedTargets
+        guard !targets.isEmpty else { return }
         let voice = selectedVoice
         let interval = max(TimeInterval(repeatIntervalSeconds), 5)
 
         switch mode {
         case .once:
-            Task { await sendMessage(text, target: target, voice: voice, kind: .single, detail: nil) }
+            Task { await sendMessage(text, targets: targets, voice: voice, kind: .single, detail: nil) }
         case .onceAs:
             let formattedMessage = Self.messageWithSenderName(text, senderName: senderName)
-            Task { await sendMessage(formattedMessage, target: target, voice: voice, kind: .singleAs, detail: senderDetail) }
+            Task { await sendMessage(formattedMessage, targets: targets, voice: voice, kind: .singleAs, detail: senderDetail) }
         case .repeatCount:
-            startRepeat(message: text, target: target, voice: voice, interval: interval, limit: .count(max(repeatCount, 1)))
+            startRepeat(message: text, targets: targets, voice: voice, interval: interval, limit: .count(max(repeatCount, 1)))
         case .repeatDuration:
             startRepeat(
                 message: text,
-                target: target,
+                targets: targets,
                 voice: voice,
                 interval: interval,
                 limit: .duration(TimeInterval(max(repeatDurationMinutes, 1) * 60))
             )
         case .repeatIndefinitely:
-            startRepeat(message: text, target: target, voice: voice, interval: interval, limit: .indefinitely)
+            startRepeat(message: text, targets: targets, voice: voice, interval: interval, limit: .indefinitely)
         case .countdown:
             startCountdown(
                 totalDuration: TimeInterval(max(countdownMinutes, 1) * 60),
                 interval: TimeInterval(max(countdownIntervalMinutes, 1) * 60),
-                target: target,
+                targets: targets,
                 voice: voice,
                 template: countdownTemplate,
                 finalMessage: finalMessage
@@ -247,7 +296,7 @@ final class AppState {
         Task {
             await sendMessage(
                 message.text,
-                target: message.target,
+                targets: message.targets,
                 voice: message.voicePreset,
                 kind: message.kind,
                 detail: message.detail
@@ -259,7 +308,7 @@ final class AppState {
         Task {
             await sendMessage(
                 message.text,
-                target: message.target,
+                targets: message.targets,
                 voice: message.voicePreset,
                 kind: .single,
                 detail: "Resent"
@@ -350,7 +399,7 @@ final class AppState {
                 MessageRecord(
                     id: UUID(),
                     text: session.finalMessage,
-                    target: session.target,
+                    targets: session.targets,
                     voicePreset: session.voicePreset,
                     sentAt: now(),
                     status: .cancelled,
@@ -384,14 +433,14 @@ final class AppState {
     @discardableResult
     private func sendMessage(
         _ text: String,
-        target: MediaPlayerTarget,
+        targets: [MediaPlayerTarget],
         voice: VoicePreset,
         kind: MessageKind,
         detail: String?,
         sessionID: UUID? = nil
     ) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty, !targets.isEmpty else { return false }
 
         let id = UUID()
         if let sessionID {
@@ -411,7 +460,7 @@ final class AppState {
             MessageRecord(
                 id: id,
                 text: trimmed,
-                target: target,
+                targets: targets,
                 voicePreset: voice,
                 sentAt: now(),
                 status: .sending,
@@ -427,8 +476,9 @@ final class AppState {
                 serverURL: serverProfile.serverURL,
                 token: token,
                 message: trimmed,
-                target: target,
-                voicePreset: voice
+                targets: targets,
+                voicePreset: voice,
+                ttsEngines: ttsEngines
             )
             updateMessage(id) {
                 if $0.status != .cancelled {
@@ -454,7 +504,7 @@ final class AppState {
 
     func startRepeat(
         message: String,
-        target: MediaPlayerTarget,
+        targets: [MediaPlayerTarget],
         voice: VoicePreset,
         interval: TimeInterval,
         limit: RepeatLimit
@@ -463,7 +513,7 @@ final class AppState {
         let session = RepeatSession(
             id: UUID(),
             message: message,
-            target: target,
+            targets: targets,
             voicePreset: voice,
             interval: interval,
             limit: limit,
@@ -501,7 +551,7 @@ final class AppState {
 
                 let sendSucceeded = await self.sendMessage(
                     session.message,
-                    target: session.target,
+                    targets: session.targets,
                     voice: session.voicePreset,
                     kind: .repeated,
                     detail: detail,
@@ -536,7 +586,7 @@ final class AppState {
     func startCountdown(
         totalDuration: TimeInterval,
         interval: TimeInterval,
-        target: MediaPlayerTarget,
+        targets: [MediaPlayerTarget],
         voice: VoicePreset,
         template: String,
         finalMessage: String
@@ -553,7 +603,7 @@ final class AppState {
             id: UUID(),
             totalDuration: totalDuration,
             interval: interval,
-            target: target,
+            targets: targets,
             voicePreset: voice,
             template: safeTemplate,
             finalMessage: safeFinal,
@@ -588,7 +638,7 @@ final class AppState {
                             MessageRecord(
                                 id: UUID(),
                                 text: session.finalMessage,
-                                target: session.target,
+                                targets: session.targets,
                                 voicePreset: session.voicePreset,
                                 sentAt: self.now(),
                                 status: .cancelled,
@@ -603,7 +653,7 @@ final class AppState {
 
                     let sendSucceeded = await self.sendMessage(
                         session.finalMessage,
-                        target: session.target,
+                        targets: session.targets,
                         voice: session.voicePreset,
                         kind: .countdown,
                         detail: "Final",
@@ -634,7 +684,7 @@ final class AppState {
                     let message = Self.countdownMessage(template: session.template, remaining: remaining)
                     let sendSucceeded = await self.sendMessage(
                         message,
-                        target: session.target,
+                        targets: session.targets,
                         voice: session.voicePreset,
                         kind: .countdown,
                         detail: "\(minutes) min remaining",
@@ -749,7 +799,7 @@ final class AppState {
 
     private func markInFlightMessageUnknown(sessionID: UUID) -> Bool {
         guard let messageID = sessionInFlightMessageIDs[sessionID],
-              let index = messages.firstIndex(where: { $0.id == messageID && $0.status == .sending }) else {
+               let index = messages.firstIndex(where: { $0.id == messageID && $0.status == .sending }) else {
             return false
         }
         messages[index].status = .unknown
@@ -785,9 +835,10 @@ final class AppState {
             let state = try JSONDecoder().decode(PersistedAppState.self, from: data)
             serverProfile = state.serverProfile
             senderName = state.senderName
-            selectedTargetID = state.selectedTargetID
+            selectedTargetIDs = state.selectedTargetIDs
             selectedVoiceID = state.selectedVoiceID
             mediaPlayers = state.mediaPlayers
+            ttsEngines = state.ttsEngines
             voicePresets = Self.presetsByAddingMissingBuiltIns(to: state.voicePresets)
             messages = state.messages
         } catch {
@@ -807,9 +858,10 @@ final class AppState {
         let state = PersistedAppState(
             serverProfile: serverProfile,
             senderName: senderName,
-            selectedTargetID: selectedTargetID,
+            selectedTargetIDs: selectedTargetIDs,
             selectedVoiceID: selectedVoiceID,
             mediaPlayers: mediaPlayers,
+            ttsEngines: ttsEngines,
             voicePresets: voicePresets,
             messages: Array(messages.suffix(200))
         )

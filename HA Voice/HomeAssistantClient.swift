@@ -10,10 +10,17 @@ struct HomeAssistantClient {
     }
 
     func fetchMediaPlayers(serverURL: String, token: String) async throws -> [MediaPlayerTarget] {
+        try await fetchMediaPlayersAndEngines(serverURL: serverURL, token: token).mediaPlayers
+    }
+
+    func fetchMediaPlayersAndEngines(
+        serverURL: String,
+        token: String
+    ) async throws -> (mediaPlayers: [MediaPlayerTarget], ttsEngines: [TTSEngine]) {
         let request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/states")
         let (data, response) = try await execute(request, rawServerURL: serverURL)
         try validate(response)
-        return try Self.mediaPlayers(from: data)
+        return try Self.mediaPlayersAndEngines(from: data)
     }
 
     func sendTTS(
@@ -21,16 +28,55 @@ struct HomeAssistantClient {
         token: String,
         message: String,
         target: MediaPlayerTarget,
-        voicePreset: VoicePreset
+        voicePreset: VoicePreset,
+        ttsEngines: [TTSEngine] = []
     ) async throws {
-        var request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/services/tts/cloud_say")
-        request.httpMethod = "POST"
-        request.httpBody = try JSONSerialization.data(
-            withJSONObject: Self.ttsPayload(message: message, target: target, voicePreset: voicePreset),
-            options: []
+        try await sendTTS(
+            serverURL: serverURL,
+            token: token,
+            message: message,
+            targets: [target],
+            voicePreset: voicePreset,
+            ttsEngines: ttsEngines
         )
-        let (_, response) = try await execute(request, rawServerURL: serverURL)
-        try validate(response)
+    }
+
+    func sendTTS(
+        serverURL: String,
+        token: String,
+        message: String,
+        targets: [MediaPlayerTarget],
+        voicePreset: VoicePreset,
+        ttsEngines: [TTSEngine] = []
+    ) async throws {
+        guard !targets.isEmpty else { return }
+
+        if let engineID = try Self.resolveEngineID(for: voicePreset, ttsEngines: ttsEngines) {
+            var request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/services/tts/speak")
+            request.httpMethod = "POST"
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: Self.speakPayload(
+                    message: message,
+                    targets: targets,
+                    voicePreset: voicePreset,
+                    engineID: engineID
+                ),
+                options: []
+            )
+            let (_, response) = try await execute(request, rawServerURL: serverURL)
+            try validate(response)
+        } else {
+            for target in targets {
+                var request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/services/tts/cloud_say")
+                request.httpMethod = "POST"
+                request.httpBody = try JSONSerialization.data(
+                    withJSONObject: Self.ttsPayload(message: message, target: target, voicePreset: voicePreset),
+                    options: []
+                )
+                let (_, response) = try await execute(request, rawServerURL: serverURL)
+                try validate(response)
+            }
+        }
     }
 
     static func normalizedBaseURL(_ rawValue: String) throws -> URL {
@@ -61,6 +107,80 @@ struct HomeAssistantClient {
         !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    static func defaultEngine(from engines: [TTSEngine]) -> TTSEngine? {
+        engines.first { $0.entityID == VoicePreset.cloudEngineID } ?? engines.first
+    }
+
+    static func resolveEngineID(
+        for voicePreset: VoicePreset,
+        ttsEngines: [TTSEngine]
+    ) throws -> String? {
+        let explicitEngineID: String? = {
+            guard let raw = voicePreset.engineID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty else {
+                return nil
+            }
+            return raw
+        }()
+
+        if ttsEngines.isEmpty {
+            if let explicitEngineID, explicitEngineID != VoicePreset.cloudEngineID {
+                throw HomeAssistantError.missingTTSEngine(explicitEngineID)
+            }
+            return nil
+        }
+
+        if let explicitEngineID {
+            guard ttsEngines.contains(where: { $0.entityID == explicitEngineID }) else {
+                throw HomeAssistantError.missingTTSEngine(explicitEngineID)
+            }
+            return explicitEngineID
+        }
+
+        return defaultEngine(from: ttsEngines)?.entityID
+    }
+
+    static func speakPayload(
+        message: String,
+        targets: [MediaPlayerTarget],
+        voicePreset: VoicePreset,
+        engineID: String
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "entity_id": engineID,
+            "media_player_entity_id": targets.map(\.entityID),
+            "message": message,
+            "cache": false
+        ]
+
+        if !voicePreset.language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["language"] = voicePreset.language
+        }
+
+        if let voice = voicePreset.serviceVoice {
+            payload["options"] = ["voice": voice]
+        }
+
+        return payload
+    }
+
+    static func speakPayload(
+        message: String,
+        targets: [MediaPlayerTarget],
+        voicePreset: VoicePreset,
+        ttsEngines: [TTSEngine]
+    ) throws -> [String: Any] {
+        let engineID = try resolveEngineID(for: voicePreset, ttsEngines: ttsEngines)
+            ?? voicePreset.engineID
+            ?? VoicePreset.cloudEngineID
+        return speakPayload(
+            message: message,
+            targets: targets,
+            voicePreset: voicePreset,
+            engineID: engineID
+        )
+    }
+
     static func ttsPayload(
         message: String,
         target: MediaPlayerTarget,
@@ -84,8 +204,18 @@ struct HomeAssistantClient {
     }
 
     static func mediaPlayers(from data: Data) throws -> [MediaPlayerTarget] {
+        try mediaPlayersAndEngines(from: data).mediaPlayers
+    }
+
+    static func ttsEngines(from data: Data) throws -> [TTSEngine] {
+        try mediaPlayersAndEngines(from: data).ttsEngines
+    }
+
+    static func mediaPlayersAndEngines(
+        from data: Data
+    ) throws -> (mediaPlayers: [MediaPlayerTarget], ttsEngines: [TTSEngine]) {
         let states = try JSONDecoder().decode([HAState].self, from: data)
-        return states
+        let players = states
             .filter { $0.entityID.hasPrefix("media_player.") }
             .map { state in
                 MediaPlayerTarget(
@@ -95,6 +225,17 @@ struct HomeAssistantClient {
                 )
             }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+
+        let engines = states
+            .filter { $0.entityID.hasPrefix("tts.") }
+            .map { state in
+                TTSEngine(
+                    entityID: state.entityID,
+                    name: state.attributes.friendlyName ?? ""
+                )
+            }
+
+        return (players, engines)
     }
 
     private func execute(_ request: URLRequest, rawServerURL: String) async throws -> (Data, URLResponse) {
@@ -186,6 +327,7 @@ enum HomeAssistantError: LocalizedError, Equatable {
     case insecureConnectionBlocked
     case secureConnectionFailed(suggestion: String?)
     case serviceFailed(Int)
+    case missingTTSEngine(String)
 
     var errorDescription: String? {
         switch self {
@@ -207,6 +349,8 @@ enum HomeAssistantError: LocalizedError, Equatable {
             }
         case .serviceFailed(let statusCode):
             "Home Assistant returned status \(statusCode)."
+        case .missingTTSEngine(let engineID):
+            "Speech engine \(engineID) isn't available on this server."
         }
     }
 }
