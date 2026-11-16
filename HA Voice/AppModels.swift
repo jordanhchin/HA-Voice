@@ -58,24 +58,79 @@ struct MediaPlayerTarget: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+struct TTSEngine: Identifiable, Codable, Equatable, Hashable {
+    var id: String { entityID }
+
+    let entityID: String
+    let name: String
+
+    init(entityID: String, name: String = "") {
+        self.entityID = entityID
+        self.name = name.isEmpty ? entityID : name
+    }
+
+    var displayName: String {
+        name.isEmpty ? entityID : name
+    }
+}
+
 struct VoicePreset: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     var name: String
     var language: String
     var voice: String
     var isCustom: Bool
+    var engineID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case language
+        case voice
+        case isCustom
+        case engineID
+    }
+
+    init(
+        id: UUID,
+        name: String,
+        language: String,
+        voice: String,
+        isCustom: Bool,
+        engineID: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.language = language
+        self.voice = voice
+        self.isCustom = isCustom
+        self.engineID = engineID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        language = try container.decode(String.self, forKey: .language)
+        voice = try container.decode(String.self, forKey: .voice)
+        isCustom = try container.decode(Bool.self, forKey: .isCustom)
+        engineID = try container.decodeIfPresent(String.self, forKey: .engineID)
+    }
 
     var serviceVoice: String? {
         let trimmed = voice.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    static let cloudEngineID = "tts.home_assistant_cloud"
+
     static let defaultPreset = VoicePreset(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
         name: "Default Home Assistant voice",
         language: "en-US",
         voice: "",
-        isCustom: false
+        isCustom: false,
+        engineID: nil
     )
 
     static let builtIns: [VoicePreset] = [
@@ -85,28 +140,32 @@ struct VoicePreset: Identifiable, Codable, Equatable, Hashable {
             name: "Jenny",
             language: "en-US",
             voice: "JennyNeural",
-            isCustom: false
+            isCustom: false,
+            engineID: cloudEngineID
         ),
         VoicePreset(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
             name: "Guy",
             language: "en-US",
             voice: "GuyNeural",
-            isCustom: false
+            isCustom: false,
+            engineID: cloudEngineID
         ),
         VoicePreset(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
             name: "Aria",
             language: "en-US",
             voice: "AriaNeural",
-            isCustom: false
+            isCustom: false,
+            engineID: cloudEngineID
         ),
         VoicePreset(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000005")!,
             name: "Maisie",
             language: "en-GB",
             voice: "MaisieNeural",
-            isCustom: false
+            isCustom: false,
+            engineID: cloudEngineID
         )
     ]
 }
@@ -135,13 +194,92 @@ enum MessageKind: String, Codable, Equatable {
 struct MessageRecord: Identifiable, Codable, Equatable {
     let id: UUID
     var text: String
-    var target: MediaPlayerTarget
+    var targets: [MediaPlayerTarget]
     var voicePreset: VoicePreset
     var sentAt: Date
     var status: MessageStatus
     var errorMessage: String?
     var kind: MessageKind
     var detail: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case text
+        case targets
+        case target
+        case voicePreset
+        case sentAt
+        case status
+        case errorMessage
+        case kind
+        case detail
+    }
+
+    init(
+        id: UUID,
+        text: String,
+        targets: [MediaPlayerTarget],
+        voicePreset: VoicePreset,
+        sentAt: Date,
+        status: MessageStatus,
+        errorMessage: String?,
+        kind: MessageKind,
+        detail: String?
+    ) {
+        self.id = id
+        self.text = text
+        self.targets = targets
+        self.voicePreset = voicePreset
+        self.sentAt = sentAt
+        self.status = status
+        self.errorMessage = errorMessage
+        self.kind = kind
+        self.detail = detail
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
+        if container.contains(.targets) {
+            targets = try container.decode([MediaPlayerTarget].self, forKey: .targets)
+        } else {
+            let singleTarget = try container.decode(MediaPlayerTarget.self, forKey: .target)
+            targets = [singleTarget]
+        }
+        voicePreset = try container.decode(VoicePreset.self, forKey: .voicePreset)
+        sentAt = try container.decode(Date.self, forKey: .sentAt)
+        status = try container.decode(MessageStatus.self, forKey: .status)
+        errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        kind = try container.decode(MessageKind.self, forKey: .kind)
+        detail = try container.decodeIfPresent(String.self, forKey: .detail)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(text, forKey: .text)
+        try container.encode(targets, forKey: .targets)
+        try container.encode(voicePreset, forKey: .voicePreset)
+        try container.encode(sentAt, forKey: .sentAt)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(errorMessage, forKey: .errorMessage)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(detail, forKey: .detail)
+    }
+
+    var targetsDisplayName: String {
+        Self.targetsSummary(targets)
+    }
+
+    static func targetsSummary(_ targets: [MediaPlayerTarget]) -> String {
+        let names = targets.map(\.displayName)
+        guard names.count > 3 else {
+            return names.joined(separator: ", ")
+        }
+        let prefix = names.prefix(3).joined(separator: ", ")
+        return "\(prefix) +\(names.count - 3)"
+    }
 }
 
 enum RepeatLimit: Codable, Equatable {
@@ -181,7 +319,7 @@ enum SessionStatus: String, Codable, Equatable {
 struct RepeatSession: Identifiable, Codable, Equatable {
     let id: UUID
     var message: String
-    var target: MediaPlayerTarget
+    var targets: [MediaPlayerTarget]
     var voicePreset: VoicePreset
     var interval: TimeInterval
     var limit: RepeatLimit
@@ -206,7 +344,7 @@ struct CountdownSession: Identifiable, Codable, Equatable {
     let id: UUID
     var totalDuration: TimeInterval
     var interval: TimeInterval
-    var target: MediaPlayerTarget
+    var targets: [MediaPlayerTarget]
     var voicePreset: VoicePreset
     var template: String
     var finalMessage: String
@@ -258,18 +396,21 @@ enum ComposerMode: String, CaseIterable, Identifiable {
 struct PersistedAppState: Codable {
     var serverProfile: ServerProfile
     var senderName: String
-    var selectedTargetID: String?
+    var selectedTargetIDs: [String]
     var selectedVoiceID: UUID
     var mediaPlayers: [MediaPlayerTarget]
+    var ttsEngines: [TTSEngine]
     var voicePresets: [VoicePreset]
     var messages: [MessageRecord]
 
     enum CodingKeys: String, CodingKey {
         case serverProfile
         case senderName
+        case selectedTargetIDs
         case selectedTargetID
         case selectedVoiceID
         case mediaPlayers
+        case ttsEngines
         case voicePresets
         case messages
     }
@@ -277,17 +418,19 @@ struct PersistedAppState: Codable {
     init(
         serverProfile: ServerProfile,
         senderName: String,
-        selectedTargetID: String?,
+        selectedTargetIDs: [String],
         selectedVoiceID: UUID,
         mediaPlayers: [MediaPlayerTarget],
+        ttsEngines: [TTSEngine] = [],
         voicePresets: [VoicePreset],
         messages: [MessageRecord]
     ) {
         self.serverProfile = serverProfile
         self.senderName = senderName
-        self.selectedTargetID = selectedTargetID
+        self.selectedTargetIDs = Self.uniqueTargetIDs(selectedTargetIDs)
         self.selectedVoiceID = selectedVoiceID
         self.mediaPlayers = mediaPlayers
+        self.ttsEngines = ttsEngines
         self.voicePresets = voicePresets
         self.messages = messages
     }
@@ -296,13 +439,25 @@ struct PersistedAppState: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         serverProfile = (try? container.decode(ServerProfile.self, forKey: .serverProfile)) ?? ServerProfile()
         senderName = (try? container.decodeIfPresent(String.self, forKey: .senderName)) ?? ""
-        selectedTargetID = try? container.decodeIfPresent(String.self, forKey: .selectedTargetID)
+        if let ids = try? container.decodeIfPresent([String].self, forKey: .selectedTargetIDs) {
+            selectedTargetIDs = Self.uniqueTargetIDs(ids)
+        } else if let legacyID = try? container.decodeIfPresent(String.self, forKey: .selectedTargetID) {
+            selectedTargetIDs = Self.uniqueTargetIDs([legacyID])
+        } else {
+            selectedTargetIDs = []
+        }
         selectedVoiceID = (try? container.decodeIfPresent(UUID.self, forKey: .selectedVoiceID)) ?? VoicePreset.defaultPreset.id
 
         if let failablePlayers = try? container.decode([FailableDecodable<MediaPlayerTarget>].self, forKey: .mediaPlayers) {
             mediaPlayers = failablePlayers.compactMap(\.value)
         } else {
             mediaPlayers = []
+        }
+
+        if let failableEngines = try? container.decode([FailableDecodable<TTSEngine>].self, forKey: .ttsEngines) {
+            ttsEngines = failableEngines.compactMap(\.value)
+        } else {
+            ttsEngines = []
         }
 
         if let failablePresets = try? container.decode([FailableDecodable<VoicePreset>].self, forKey: .voicePresets) {
@@ -317,6 +472,23 @@ struct PersistedAppState: Codable {
         } else {
             messages = []
         }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(serverProfile, forKey: .serverProfile)
+        try container.encode(senderName, forKey: .senderName)
+        try container.encode(Self.uniqueTargetIDs(selectedTargetIDs), forKey: .selectedTargetIDs)
+        try container.encode(selectedVoiceID, forKey: .selectedVoiceID)
+        try container.encode(mediaPlayers, forKey: .mediaPlayers)
+        try container.encode(ttsEngines, forKey: .ttsEngines)
+        try container.encode(voicePresets, forKey: .voicePresets)
+        try container.encode(messages, forKey: .messages)
+    }
+
+    static func uniqueTargetIDs(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 }
 
@@ -337,7 +509,7 @@ private struct FailableDecodable<T: Decodable>: Decodable {
 private struct LenientMessageRecord: Decodable {
     let id: UUID
     var text: String
-    var target: MediaPlayerTarget
+    var targets: [MediaPlayerTarget]
     var voicePreset: VoicePreset
     var sentAt: Date
     var status: MessageStatus
@@ -346,14 +518,19 @@ private struct LenientMessageRecord: Decodable {
     var detail: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, text, target, voicePreset, sentAt, status, errorMessage, kind, detail
+        case id, text, targets, target, voicePreset, sentAt, status, errorMessage, kind, detail
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
-        target = try container.decode(MediaPlayerTarget.self, forKey: .target)
+        if container.contains(.targets) {
+            targets = try container.decode([MediaPlayerTarget].self, forKey: .targets)
+        } else {
+            let singleTarget = try container.decode(MediaPlayerTarget.self, forKey: .target)
+            targets = [singleTarget]
+        }
         voicePreset = try container.decode(VoicePreset.self, forKey: .voicePreset)
         sentAt = try container.decode(Date.self, forKey: .sentAt)
 
@@ -378,7 +555,7 @@ private struct LenientMessageRecord: Decodable {
         MessageRecord(
             id: id,
             text: text,
-            target: target,
+            targets: targets,
             voicePreset: voicePreset,
             sentAt: sentAt,
             status: status,
