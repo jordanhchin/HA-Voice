@@ -79,6 +79,16 @@ struct HomeAssistantClientMockTests {
         friendlyName: "Kitchen Speaker",
         state: "idle"
     )
+    private let office = MediaPlayerTarget(
+        entityID: "media_player.office",
+        friendlyName: "Office Speaker",
+        state: "idle"
+    )
+    private let bedroom = MediaPlayerTarget(
+        entityID: "media_player.bedroom",
+        friendlyName: "Bedroom Speaker",
+        state: "idle"
+    )
 
     private func makeClient() -> HomeAssistantClient {
         let config = URLSessionConfiguration.ephemeral
@@ -197,7 +207,7 @@ struct HomeAssistantClientMockTests {
                 serverURL: "https://ha.local:8123",
                 token: token,
                 message: "Test message",
-                target: kitchen,
+                targets: [kitchen],
                 voicePreset: voice
             )
             #expect(Bool(false), "Expected serviceFailed error to be thrown")
@@ -231,7 +241,7 @@ struct HomeAssistantClientMockTests {
             serverURL: "https://myha.org:8123/ha/",
             token: token,
             message: "Hello World",
-            target: kitchen,
+            targets: [kitchen],
             voicePreset: voice
         )
 
@@ -249,6 +259,227 @@ struct HomeAssistantClientMockTests {
         #expect(json["language"] as? String == "en-US")
         let options = try #require(json["options"] as? [String: String])
         #expect(options["voice"] == "GuyNeural")
+    }
+
+    @Test func sendTTSSpeakUsesSpeakEndpointWithMultipleSpeakers() async throws {
+        let token = "speak-token-multi"
+        var capturedRequests: [URLRequest] = []
+
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
+            capturedRequests.append(request)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data())
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        let engines = [
+            TTSEngine(entityID: "tts.piper", name: "Piper"),
+            TTSEngine(entityID: "tts.home_assistant_cloud", name: "Home Assistant Cloud")
+        ]
+        let voice = VoicePreset(
+            id: UUID(),
+            name: "Piper Voice",
+            language: "en-US",
+            voice: "en_US-lessac-medium",
+            isCustom: true,
+            engineID: "tts.piper"
+        )
+
+        try await client.sendTTS(
+            serverURL: "https://myha.org:8123",
+            token: token,
+            message: "Announcement for everyone",
+            targets: [kitchen, office],
+            voicePreset: voice,
+            ttsEngines: engines
+        )
+
+        #expect(capturedRequests.count == 1)
+        let request = try #require(capturedRequests.first)
+        #expect(request.url?.absoluteString == "https://myha.org:8123/api/services/tts/speak")
+
+        let bodyData = try #require(request.extractBodyData())
+        let json = try #require(try JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        #expect(json["entity_id"] as? String == "tts.piper")
+        #expect(json["media_player_entity_id"] as? [String] == ["media_player.kitchen", "media_player.office"])
+        #expect(json["message"] as? String == "Announcement for everyone")
+        #expect(json["language"] as? String == "en-US")
+        #expect(json["cache"] as? Bool == false)
+        let options = try #require(json["options"] as? [String: String])
+        #expect(options["voice"] == "en_US-lessac-medium")
+    }
+
+    @Test func cloudSayFallbackSendsOneRequestPerSpeakerWhenNoEnginesExist() async throws {
+        let token = "fallback-multi-token"
+        var capturedRequests: [URLRequest] = []
+
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
+            capturedRequests.append(request)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data())
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        try await client.sendTTS(
+            serverURL: "https://ha.local:8123",
+            token: token,
+            message: "Legacy broadcast",
+            targets: [kitchen, office, bedroom],
+            voicePreset: .defaultPreset,
+            ttsEngines: []
+        )
+
+        #expect(capturedRequests.count == 3)
+        var targetEntityIDs: [String] = []
+        for request in capturedRequests {
+            #expect(request.url?.absoluteString == "https://ha.local:8123/api/services/tts/cloud_say")
+            let bodyData = try #require(request.extractBodyData())
+            let json = try #require(try JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+            if let entityID = json["entity_id"] as? String {
+                targetEntityIDs.append(entityID)
+            }
+            #expect(json["message"] as? String == "Legacy broadcast")
+            #expect(json["cache"] as? Bool == false)
+        }
+        #expect(targetEntityIDs == ["media_player.kitchen", "media_player.office", "media_player.bedroom"])
+    }
+
+    @Test func missingEngineThrowsClearErrorAndSendsNoRequest() async {
+        let token = "missing-engine-token"
+        var requestCount = 0
+
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
+            requestCount += 1
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        let engines = [TTSEngine(entityID: "tts.google_translate", name: "Google Translate")]
+        let missingPreset = VoicePreset(
+            id: UUID(),
+            name: "Removed Piper",
+            language: "en-US",
+            voice: "",
+            isCustom: true,
+            engineID: "tts.piper"
+        )
+
+        do {
+            try await client.sendTTS(
+                serverURL: "https://ha.local:8123",
+                token: token,
+                message: "Should fail before network",
+                targets: [kitchen, office],
+                voicePreset: missingPreset,
+                ttsEngines: engines
+            )
+            #expect(Bool(false), "Expected missingTTSEngine error to be thrown")
+        } catch let error as HomeAssistantError {
+            #expect(error == .missingTTSEngine("tts.piper"))
+            #expect(error.errorDescription == "Speech engine tts.piper isn't available on this server.")
+        } catch {
+            #expect(Bool(false), "Unexpected error: \(error)")
+        }
+
+        #expect(requestCount == 0)
+    }
+
+    @Test @MainActor func refreshMediaPlayersUpdatesEnginesDropsStaleTargetsAndFallsBackToFirstSpeaker() async throws {
+        let token = "refresh-state-token"
+        var statesFetchCount = 0
+        var statesPayload = """
+        [
+          {
+            "entity_id": "media_player.office",
+            "state": "idle",
+            "attributes": { "friendly_name": "Office" }
+          },
+          {
+            "entity_id": "media_player.kitchen",
+            "state": "idle",
+            "attributes": { "friendly_name": "Kitchen" }
+          },
+          {
+            "entity_id": "tts.piper",
+            "state": "unknown",
+            "attributes": { "friendly_name": "Piper" }
+          }
+        ]
+        """.data(using: .utf8)!
+
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
+            statesFetchCount += 1
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, statesPayload)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let client = makeClient()
+        let defaults = UserDefaults(suiteName: "SpeakRefreshTests-\(UUID().uuidString)")!
+        let state = AppState(
+            client: client,
+            keychain: KeychainTokenStore(),
+            defaults: defaults
+        )
+        state.serverProfile = ServerProfile(
+            serverURL: "https://ha.local:8123",
+            displayName: "HA",
+            lastConnectionStatus: .connected
+        )
+        state.token = token
+        state.selectedTargetIDs = ["media_player.removed", "media_player.office"]
+
+        await state.refreshMediaPlayers()
+
+        // Single network call populates both mediaPlayers and ttsEngines, drops "media_player.removed", keeps "media_player.office"
+        #expect(statesFetchCount == 1)
+        #expect(state.mediaPlayers.map(\.entityID) == ["media_player.kitchen", "media_player.office"])
+        #expect(state.ttsEngines == [TTSEngine(entityID: "tts.piper", name: "Piper")])
+        #expect(state.selectedTargetIDs == ["media_player.office"])
+        #expect(state.selectedTargets.map(\.entityID) == ["media_player.office"])
+
+        // Second refresh where none of the selected IDs remain falls back to first speaker ("media_player.kitchen")
+        state.selectedTargetIDs = ["media_player.gone_1", "media_player.gone_2"]
+        await state.refreshMediaPlayers()
+
+        #expect(statesFetchCount == 2)
+        #expect(state.selectedTargetIDs == ["media_player.kitchen"])
+        #expect(state.selectedTargets.map(\.entityID) == ["media_player.kitchen"])
+
+        // Test multi-select toggle, select all, and clear behaviors
+        state.selectAllTargets()
+        #expect(state.selectedTargetIDs == ["media_player.kitchen", "media_player.office"])
+
+        state.clearTargetSelection()
+        #expect(state.selectedTargetIDs == ["media_player.kitchen"])
+
+        // Deselecting the last remaining speaker is prevented
+        state.toggleTargetSelection(kitchen)
+        #expect(state.selectedTargetIDs == ["media_player.kitchen"])
     }
 
     @Test func atsBlockedInsecureHTTPThrowsClearError() async {

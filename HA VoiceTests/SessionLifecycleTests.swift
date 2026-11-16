@@ -117,6 +117,11 @@ struct SessionLifecycleTests {
         friendlyName: "Kitchen",
         state: "idle"
     )
+    private let office = MediaPlayerTarget(
+        entityID: "media_player.office",
+        friendlyName: "Office",
+        state: "idle"
+    )
 
     private func makeAppState(clock: SessionTestClock) -> AppState {
         let config = URLSessionConfiguration.ephemeral
@@ -134,7 +139,7 @@ struct SessionLifecycleTests {
         state.serverProfile = ServerProfile(serverURL: "http://homeassistant.local:8123", displayName: "Home Assistant", lastConnectionStatus: .connected)
         state.token = "test-token"
         state.mediaPlayers = [kitchen]
-        state.selectedTargetID = kitchen.entityID
+        state.selectedTargetIDs = [kitchen.entityID]
         return state
     }
 
@@ -149,7 +154,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 10 * 60,
             interval: 5 * 60,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "You have {minutes} minutes until it's time to go.",
             finalMessage: "It's time to go."
@@ -185,7 +190,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 10 * 60,
             interval: 4 * 60,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "You have {minutes} minutes until it's time to go.",
             finalMessage: "It's time to go."
@@ -220,7 +225,7 @@ struct SessionLifecycleTests {
 
         appState.startRepeat(
             message: "Hello",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(3)
@@ -246,7 +251,7 @@ struct SessionLifecycleTests {
 
         appState.startRepeat(
             message: "Hello",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(3)
@@ -280,7 +285,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 600,
             interval: 300,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "You have {minutes} minutes.",
             finalMessage: "Done."
@@ -311,7 +316,7 @@ struct SessionLifecycleTests {
 
         appState.startRepeat(
             message: "Dinner is ready",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(3)
@@ -334,7 +339,7 @@ struct SessionLifecycleTests {
         // 60 seconds duration, 25 seconds interval
         appState.startRepeat(
             message: "Testing duration",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 25,
             limit: .duration(60)
@@ -370,7 +375,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 600,
             interval: 300,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "You have {minutes} minutes.",
             finalMessage: "Done."
@@ -413,7 +418,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 600,
             interval: 300,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "You have {minutes} minutes.",
             finalMessage: "Done."
@@ -461,7 +466,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 600,
             interval: 300,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "You have {minutes} minutes.",
             finalMessage: "Done."
@@ -510,7 +515,7 @@ struct SessionLifecycleTests {
 
         appState.startRepeat(
             message: "Check oven",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(5)
@@ -545,14 +550,14 @@ struct SessionLifecycleTests {
 
         appState.startRepeat(
             message: "Session Alpha",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(3)
         )
         appState.startRepeat(
             message: "Session Beta",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(3)
@@ -613,7 +618,7 @@ struct SessionLifecycleTests {
 
         appState.startRepeat(
             message: "Oven check",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(2)
@@ -661,7 +666,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 60,
             interval: 20,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "{minutes} min left",
             finalMessage: "Done"
@@ -712,7 +717,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 20,
             interval: 20,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "{minutes} min left",
             finalMessage: "Final Countdown Over"
@@ -752,7 +757,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 60,
             interval: 20,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "{minutes} min left",
             finalMessage: "Done"
@@ -777,7 +782,7 @@ struct SessionLifecycleTests {
 
         appState.startRepeat(
             message: "Oven check",
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             interval: 10,
             limit: .count(2)
@@ -813,7 +818,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 60,
             interval: 20,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "{minutes} min left",
             finalMessage: "Done"
@@ -847,7 +852,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 60,
             interval: 20,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "{minutes} min left",
             finalMessage: "Time is up!"
@@ -880,7 +885,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 600,
             interval: 300,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "{minutes} min remaining",
             finalMessage: "Time to leave!"
@@ -936,7 +941,7 @@ struct SessionLifecycleTests {
         appState.startCountdown(
             totalDuration: 600,
             interval: 300,
-            target: kitchen,
+            targets: [kitchen],
             voice: .defaultPreset,
             template: "{minutes} min remaining",
             finalMessage: "Time to leave!"
@@ -973,5 +978,49 @@ struct SessionLifecycleTests {
         #expect(lastMessage.kind == .countdown)
         #expect(lastMessage.detail == "Expired – not announced")
         #expect(lastMessage.text == "Time to leave!")
+    }
+
+    @Test func repeatAndRetrySendToMultipleSpeakersInSingleSpeakCallPerAnnouncement() async throws {
+        let barrier = SessionAtomicBarrier()
+        SessionMockURLProtocol.requestHandler = { request in
+            _ = barrier.incrementRequestCount()
+            #expect(request.url?.path == "/api/services/tts/speak")
+            return (HTTPURLResponse(url: request.url ?? URL(string: "http://homeassistant.local:8123")!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+        }
+        defer { SessionMockURLProtocol.requestHandler = nil }
+
+        let clock = SessionTestClock()
+        let appState = makeAppState(clock: clock)
+        appState.mediaPlayers = [kitchen, office]
+        appState.selectedTargetIDs = [kitchen.entityID, office.entityID]
+        appState.ttsEngines = [TTSEngine(entityID: "tts.piper", name: "Piper")]
+
+        appState.startRepeat(
+            message: "Multi speaker repeat",
+            targets: [kitchen, office],
+            voice: .defaultPreset,
+            interval: 10,
+            limit: .count(2)
+        )
+
+        try await sessionWaitUntil {
+            appState.repeatSessions.first?.status == .completed
+        }
+
+        // 2 announcements across 2 speakers = 2 tts.speak calls total
+        #expect(barrier.requestCount == 2)
+        #expect(appState.messages.count == 2)
+        #expect(appState.messages.allSatisfy { $0.targets == [kitchen, office] })
+
+        // Resend reuses record's targets in 1 tts.speak call
+        let firstRecord = try #require(appState.messages.first)
+        appState.resend(firstRecord)
+
+        try await sessionWaitUntil {
+            appState.messages.count == 3 && appState.messages.last?.status == .sent
+        }
+
+        #expect(barrier.requestCount == 3)
+        #expect(appState.messages.last?.targets == [kitchen, office])
     }
 }

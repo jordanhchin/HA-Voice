@@ -8,6 +8,11 @@ struct PersistenceHardeningTests {
         friendlyName: "Kitchen",
         state: "idle"
     )
+    private let office = MediaPlayerTarget(
+        entityID: "media_player.office",
+        friendlyName: "Office",
+        state: "idle"
+    )
 
     @Test func roundTripAppState() throws {
         let voice = VoicePreset(
@@ -15,12 +20,14 @@ struct PersistenceHardeningTests {
             name: "Custom Voice",
             language: "en-US",
             voice: "CustomNeural",
-            isCustom: true
+            isCustom: true,
+            engineID: "tts.piper"
         )
+        let engine = TTSEngine(entityID: "tts.piper", name: "Piper")
         let record = MessageRecord(
             id: UUID(),
             text: "Dinner is ready",
-            target: kitchen,
+            targets: [kitchen, office],
             voicePreset: voice,
             sentAt: Date(timeIntervalSince1970: 1700000000),
             status: .sent,
@@ -35,9 +42,10 @@ struct PersistenceHardeningTests {
                 lastConnectionStatus: .connected
             ),
             senderName: "Alice",
-            selectedTargetID: kitchen.entityID,
+            selectedTargetIDs: [kitchen.entityID, office.entityID],
             selectedVoiceID: voice.id,
-            mediaPlayers: [kitchen],
+            mediaPlayers: [kitchen, office],
+            ttsEngines: [engine],
             voicePresets: [voice],
             messages: [record]
         )
@@ -54,12 +62,15 @@ struct PersistenceHardeningTests {
         #expect(decoded.serverProfile.displayName == "Home Server")
         #expect(decoded.serverProfile.lastConnectionStatus == .connected)
         #expect(decoded.senderName == "Alice")
-        #expect(decoded.selectedTargetID == kitchen.entityID)
+        #expect(decoded.selectedTargetIDs == [kitchen.entityID, office.entityID])
         #expect(decoded.selectedVoiceID == voice.id)
-        #expect(decoded.mediaPlayers.count == 1)
-        #expect(decoded.mediaPlayers.first?.entityID == kitchen.entityID)
+        #expect(decoded.mediaPlayers.count == 2)
+        #expect(decoded.mediaPlayers.map(\.entityID) == [kitchen.entityID, office.entityID])
+        #expect(decoded.ttsEngines == [engine])
+        #expect(decoded.voicePresets.first?.engineID == "tts.piper")
         #expect(decoded.messages.count == 1)
         #expect(decoded.messages.first?.text == "Dinner is ready")
+        #expect(decoded.messages.first?.targets == [kitchen, office])
         #expect(decoded.messages.first?.status == .sent)
         #expect(decoded.messages.first?.kind == .single)
     }
@@ -79,11 +90,87 @@ struct PersistenceHardeningTests {
         #expect(decoded.serverProfile.displayName == "Home Assistant")
         #expect(decoded.serverProfile.lastConnectionStatus == .notTested)
         #expect(decoded.senderName == "")
-        #expect(decoded.selectedTargetID == nil)
+        #expect(decoded.selectedTargetIDs.isEmpty)
         #expect(decoded.selectedVoiceID == VoicePreset.defaultPreset.id)
         #expect(decoded.mediaPlayers.isEmpty)
+        #expect(decoded.ttsEngines.isEmpty)
         #expect(decoded.voicePresets == VoicePreset.builtIns)
         #expect(decoded.messages.isEmpty)
+    }
+
+    @Test func migratesLegacySelectedTargetIDSingleTargetMessagesAndPresetsWithoutEngineID() throws {
+        let legacyJSON = """
+        {
+            "serverProfile": {
+                "serverURL": "https://ha.local:8123",
+                "displayName": "Home Assistant",
+                "lastConnectionStatus": "connected"
+            },
+            "senderName": "Jordan",
+            "selectedTargetID": "media_player.kitchen",
+            "selectedVoiceID": "44444444-4444-4444-4444-444444444444",
+            "mediaPlayers": [
+                {
+                    "entityID": "media_player.kitchen",
+                    "friendlyName": "Kitchen",
+                    "state": "idle"
+                }
+            ],
+            "voicePresets": [
+                {
+                    "id": "44444444-4444-4444-4444-444444444444",
+                    "name": "Legacy Custom Preset",
+                    "language": "en-US",
+                    "voice": "LegacyVoice",
+                    "isCustom": true
+                }
+            ],
+            "messages": [
+                {
+                    "id": "55555555-5555-5555-5555-555555555555",
+                    "text": "Migrated message",
+                    "target": {
+                        "entityID": "media_player.kitchen",
+                        "friendlyName": "Kitchen",
+                        "state": "idle"
+                    },
+                    "voicePreset": {
+                        "id": "44444444-4444-4444-4444-444444444444",
+                        "name": "Legacy Custom Preset",
+                        "language": "en-US",
+                        "voice": "LegacyVoice",
+                        "isCustom": true
+                    },
+                    "sentAt": 1700000000,
+                    "status": "sent",
+                    "kind": "single"
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let migrated = try decoder.decode(PersistedAppState.self, from: legacyJSON)
+
+        #expect(migrated.selectedTargetIDs == ["media_player.kitchen"])
+        #expect(migrated.voicePresets.count == 1)
+        #expect(migrated.voicePresets[0].name == "Legacy Custom Preset")
+        #expect(migrated.voicePresets[0].engineID == nil)
+        #expect(migrated.messages.count == 1)
+        #expect(migrated.messages[0].targets == [kitchen])
+        #expect(migrated.messages[0].voicePreset.engineID == nil)
+
+        // Verify re-encoding and decoding keeps the migrated fields
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let reencoded = try encoder.encode(migrated)
+        let roundTripped = try decoder.decode(PersistedAppState.self, from: reencoded)
+
+        #expect(roundTripped.selectedTargetIDs == ["media_player.kitchen"])
+        #expect(roundTripped.messages.first?.targets == [kitchen])
+        #expect(roundTripped.voicePresets.first?.name == "Legacy Custom Preset")
+        #expect(roundTripped.voicePresets.first?.engineID == nil)
     }
 
     @Test func dropsCorruptMessageWhilePreservingValidMessages() throws {
@@ -145,7 +232,9 @@ struct PersistenceHardeningTests {
 
         #expect(decoded.messages.count == 2)
         #expect(decoded.messages[0].text == "First valid message")
+        #expect(decoded.messages[0].targets == [kitchen])
         #expect(decoded.messages[1].text == "Second valid message")
+        #expect(decoded.messages[1].targets == [kitchen])
     }
 
     @Test func unknownEnumsFallbackGracefully() throws {
