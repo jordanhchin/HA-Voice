@@ -40,6 +40,7 @@ struct MainMessagingView: View {
 
     private func send() {
         appState.sendComposerMessage(draft)
+        phraseNotice = nil
         if draft.mode == .once || draft.mode == .onceAs || draft.mode == .repeatCount || draft.mode == .repeatDuration || draft.mode == .repeatIndefinitely {
             draft.message = ""
         }

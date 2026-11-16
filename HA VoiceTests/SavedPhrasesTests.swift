@@ -187,6 +187,23 @@ struct ComposerDraftTests {
         #expect(session.sentCount == 2)
     }
 
+    @Test func sendComposerMessageRepeatDurationAndIndefinitelyUseDraftSettings() async throws {
+        let (state, token) = makeAppState()
+        defer { PhraseMockURLProtocol.removeHandler(forToken: token) }
+
+        state.sendComposerMessage(ComposerDraft(message: "Shoes on", mode: .repeatDuration, repeatDurationMinutes: 3, repeatIntervalSeconds: 2))
+        state.sendComposerMessage(ComposerDraft(message: "Bedtime", mode: .repeatIndefinitely, repeatIntervalSeconds: 45))
+        defer { state.repeatSessions.forEach(state.stopRepeat) }
+
+        #expect(state.repeatSessions.count == 2)
+        let duration = try #require(state.repeatSessions.first { $0.message == "Shoes on" })
+        #expect(duration.interval == 5)
+        #expect(duration.limit == .duration(180))
+        let indefinite = try #require(state.repeatSessions.first { $0.message == "Bedtime" })
+        #expect(indefinite.interval == 45)
+        #expect(indefinite.limit == .indefinitely)
+    }
+
     @Test func sendComposerMessageCountdownUsesDraftSettings() async throws {
         let clock = PhraseTestClock()
         let (state, token) = makeAppState(clock: clock)
