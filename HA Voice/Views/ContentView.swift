@@ -48,7 +48,8 @@ struct ContentView: View {
             SettingsView(appState: appState)
         }
         .task {
-            if appState.hasServerConfiguration && appState.mediaPlayers.isEmpty {
+            // Saved state from before engine discovery has speakers but no engines.
+            if appState.hasServerConfiguration && (appState.mediaPlayers.isEmpty || appState.ttsEngines.isEmpty) {
                 await appState.refreshMediaPlayers()
             }
         }

@@ -35,6 +35,7 @@ struct VoicePresetListView: View {
             List {
                 Section {
                     ForEach(appState.voicePresets) { preset in
+                        let isAvailable = appState.isPresetAvailable(preset)
                         Button {
                             appState.selectedVoice = preset
                             dismiss()
@@ -42,9 +43,15 @@ struct VoicePresetListView: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(preset.name)
-                                    Text(Self.subtitle(for: preset, engines: appState.ttsEngines))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    if isAvailable {
+                                        Text(Self.subtitle(for: preset, engines: appState.ttsEngines))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        Label("Engine unavailable – edit to choose another", systemImage: "exclamationmark.triangle")
+                                            .font(.caption)
+                                            .foregroundStyle(.red)
+                                    }
                                 }
                                 Spacer()
                                 if appState.selectedVoiceID == preset.id {
@@ -52,6 +59,7 @@ struct VoicePresetListView: View {
                                 }
                             }
                         }
+                        .disabled(!isAvailable)
                         .swipeActions {
                             if preset.isCustom {
                                 Button("Delete", role: .destructive) {
@@ -64,7 +72,7 @@ struct VoicePresetListView: View {
                         }
                     }
                 } footer: {
-                    Text("Home Assistant Cloud voice availability can change. Custom presets let you update the voice option without changing the app.")
+                    Text("Automatic uses Home Assistant Cloud when it's available, otherwise the first speech engine on your server. Voice availability can change; custom presets let you update the voice option without changing the app.")
                 }
             }
             .navigationTitle("Voices")
@@ -126,7 +134,7 @@ private struct VoicePresetEditorView: View {
             Form {
                 TextField("Name", text: $preset.name)
                 Picker("Engine", selection: $preset.engineID) {
-                    Text("Server default").tag(String?.none)
+                    Text("Automatic").tag(String?.none)
                     ForEach(availableEngines) { engine in
                         Text(engine.displayName).tag(String?.some(engine.entityID))
                     }

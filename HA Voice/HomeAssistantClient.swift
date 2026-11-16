@@ -27,24 +27,6 @@ struct HomeAssistantClient {
         serverURL: String,
         token: String,
         message: String,
-        target: MediaPlayerTarget,
-        voicePreset: VoicePreset,
-        ttsEngines: [TTSEngine] = []
-    ) async throws {
-        try await sendTTS(
-            serverURL: serverURL,
-            token: token,
-            message: message,
-            targets: [target],
-            voicePreset: voicePreset,
-            ttsEngines: ttsEngines
-        )
-    }
-
-    func sendTTS(
-        serverURL: String,
-        token: String,
-        message: String,
         targets: [MediaPlayerTarget],
         voicePreset: VoicePreset,
         ttsEngines: [TTSEngine] = []
@@ -66,15 +48,31 @@ struct HomeAssistantClient {
             let (_, response) = try await execute(request, rawServerURL: serverURL)
             try validate(response)
         } else {
+            // cloud_say takes one speaker, so a later speaker can fail after earlier ones played.
+            var failedIDs: [String] = []
+            var firstError: Error?
             for target in targets {
-                var request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/services/tts/cloud_say")
-                request.httpMethod = "POST"
-                request.httpBody = try JSONSerialization.data(
-                    withJSONObject: Self.ttsPayload(message: message, target: target, voicePreset: voicePreset),
-                    options: []
+                do {
+                    var request = try authorizedRequest(serverURL: serverURL, token: token, path: "/api/services/tts/cloud_say")
+                    request.httpMethod = "POST"
+                    request.httpBody = try JSONSerialization.data(
+                        withJSONObject: Self.ttsPayload(message: message, target: target, voicePreset: voicePreset),
+                        options: []
+                    )
+                    let (_, response) = try await execute(request, rawServerURL: serverURL)
+                    try validate(response)
+                } catch {
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+                    failedIDs.append(target.entityID)
+                    firstError = firstError ?? error
+                }
+            }
+            if let firstError {
+                if failedIDs.count == targets.count { throw firstError }
+                throw HomeAssistantError.partialDelivery(
+                    failedEntityIDs: failedIDs,
+                    reason: firstError.localizedDescription
                 )
-                let (_, response) = try await execute(request, rawServerURL: serverURL)
-                try validate(response)
             }
         }
     }
@@ -328,6 +326,7 @@ enum HomeAssistantError: LocalizedError, Equatable {
     case secureConnectionFailed(suggestion: String?)
     case serviceFailed(Int)
     case missingTTSEngine(String)
+    case partialDelivery(failedEntityIDs: [String], reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -351,6 +350,8 @@ enum HomeAssistantError: LocalizedError, Equatable {
             "Home Assistant returned status \(statusCode)."
         case .missingTTSEngine(let engineID):
             "Speech engine \(engineID) isn't available on this server."
+        case .partialDelivery(_, let reason):
+            reason
         }
     }
 }

@@ -313,4 +313,39 @@ struct PersistenceHardeningTests {
         #expect(decoded.mediaPlayers[0].entityID == "media_player.kitchen")
         #expect(decoded.mediaPlayers[1].entityID == "media_player.living_room")
     }
+
+    @Test @MainActor func uneditedBuiltInsGainCloudEngineButCustomPresetsAreUntouched() throws {
+        var legacyJenny = try #require(VoicePreset.builtIns.first { $0.name == "Jenny" })
+        legacyJenny.engineID = nil
+        let custom = VoicePreset(id: UUID(), name: "Mine", language: "en-US", voice: "x", isCustom: true, engineID: nil)
+        var editedGuy = try #require(VoicePreset.builtIns.first { $0.name == "Guy" })
+        editedGuy.isCustom = true
+        editedGuy.engineID = "tts.google_translate_en_com"
+
+        let presets = AppState.presetsByAddingMissingBuiltIns(to: [legacyJenny, custom, editedGuy])
+
+        #expect(presets.first { $0.id == legacyJenny.id }?.engineID == VoicePreset.cloudEngineID)
+        #expect(presets.first { $0.id == custom.id }?.engineID == nil)
+        #expect(presets.first { $0.id == editedGuy.id }?.engineID == "tts.google_translate_en_com")
+        #expect(presets.first { $0.id == VoicePreset.defaultPreset.id }?.engineID == nil)
+    }
+
+    @Test @MainActor func loadingDropsStaleSelectedSpeakers() throws {
+        let defaults = UserDefaults(suiteName: "PersistenceLoadSelection-\(UUID().uuidString)")!
+        let saved = PersistedAppState(
+            serverProfile: ServerProfile(),
+            senderName: "",
+            selectedTargetIDs: ["media_player.removed"],
+            selectedVoiceID: VoicePreset.defaultPreset.id,
+            mediaPlayers: [kitchen, office],
+            ttsEngines: [],
+            voicePresets: VoicePreset.builtIns,
+            messages: []
+        )
+        defaults.set(try JSONEncoder().encode(saved), forKey: "haVoice.persistedState")
+
+        let state = AppState(client: HomeAssistantClient(), keychain: KeychainTokenStore(), defaults: defaults)
+
+        #expect(state.selectedTargetIDs == ["media_player.kitchen"])
+    }
 }

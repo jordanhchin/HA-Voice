@@ -220,16 +220,7 @@ final class AppState {
             )
             mediaPlayers = discovered.mediaPlayers
             ttsEngines = discovered.ttsEngines
-
-            let validIDs = Set(mediaPlayers.map(\.entityID))
-            let surviving = PersistedAppState.uniqueTargetIDs(selectedTargetIDs).filter { validIDs.contains($0) }
-            if !surviving.isEmpty {
-                selectedTargetIDs = surviving
-            } else if let firstID = mediaPlayers.first?.entityID {
-                selectedTargetIDs = [firstID]
-            } else {
-                selectedTargetIDs = []
-            }
+            normalizeSelectedTargets()
             persist()
         } catch {
             deviceError = error.localizedDescription
@@ -487,6 +478,30 @@ final class AppState {
                 }
             }
             return true
+        } catch HomeAssistantError.partialDelivery(let failedIDs, let reason) {
+            // Split the record so Retry only replays the speakers that missed it.
+            let failedTargets = targets.filter { failedIDs.contains($0.entityID) }
+            updateMessage(id) {
+                guard $0.status == .sending else { return }
+                $0.status = .sent
+                $0.errorMessage = nil
+                $0.targets = targets.filter { !failedIDs.contains($0.entityID) }
+            }
+            messages.append(
+                MessageRecord(
+                    id: UUID(),
+                    text: trimmed,
+                    targets: failedTargets,
+                    voicePreset: voice,
+                    sentAt: now(),
+                    status: .failed,
+                    errorMessage: reason,
+                    kind: kind,
+                    detail: detail
+                )
+            )
+            persist()
+            return false
         } catch {
             updateMessage(id) {
                 guard $0.status == .sending else { return }
@@ -841,13 +856,44 @@ final class AppState {
             ttsEngines = state.ttsEngines
             voicePresets = Self.presetsByAddingMissingBuiltIns(to: state.voicePresets)
             messages = state.messages
+            normalizeSelectedTargets()
         } catch {
             Logger.persistence.error("Failed to decode persisted state: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private static func presetsByAddingMissingBuiltIns(to savedPresets: [VoicePreset]) -> [VoicePreset] {
-        var presets = savedPresets.isEmpty ? VoicePreset.builtIns : savedPresets
+    func isPresetAvailable(_ preset: VoicePreset) -> Bool {
+        do {
+            _ = try HomeAssistantClient.resolveEngineID(for: preset, ttsEngines: ttsEngines)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func normalizeSelectedTargets() {
+        let validIDs = Set(mediaPlayers.map(\.entityID))
+        let surviving = PersistedAppState.uniqueTargetIDs(selectedTargetIDs).filter { validIDs.contains($0) }
+        if !surviving.isEmpty {
+            selectedTargetIDs = surviving
+        } else if let firstID = mediaPlayers.first?.entityID {
+            selectedTargetIDs = [firstID]
+        } else {
+            selectedTargetIDs = []
+        }
+    }
+
+    static func presetsByAddingMissingBuiltIns(to savedPresets: [VoicePreset]) -> [VoicePreset] {
+        // Unedited built-ins (editing makes a preset custom) take the current built-in engine,
+        // so presets saved before engines existed are bound to Home Assistant Cloud.
+        var presets = (savedPresets.isEmpty ? VoicePreset.builtIns : savedPresets).map { preset in
+            guard !preset.isCustom, let builtIn = VoicePreset.builtIns.first(where: { $0.id == preset.id }) else {
+                return preset
+            }
+            var updated = preset
+            updated.engineID = builtIn.engineID
+            return updated
+        }
         for builtIn in VoicePreset.builtIns where !presets.contains(where: { $0.id == builtIn.id }) {
             presets.append(builtIn)
         }

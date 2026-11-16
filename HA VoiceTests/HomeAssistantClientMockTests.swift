@@ -583,4 +583,128 @@ struct HomeAssistantClientMockTests {
             #expect(Bool(false), "Unexpected error type: \(error)")
         }
     }
+
+    private func speakResponse(_ request: URLRequest, status: Int) -> (HTTPURLResponse, Data) {
+        (HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, Data())
+    }
+
+    private func entityID(of request: URLRequest) -> String? {
+        guard let data = request.extractBodyData(),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json["entity_id"] as? String
+    }
+
+    @Test func cloudSayFallbackReportsPartialDeliveryAfterTryingEverySpeaker() async throws {
+        let token = "fallback-partial-token"
+        var attempted: [String] = []
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
+            let id = entityID(of: request) ?? ""
+            attempted.append(id)
+            return speakResponse(request, status: id == "media_player.office" ? 500 : 200)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        do {
+            try await makeClient().sendTTS(
+                serverURL: "https://ha.local:8123",
+                token: token,
+                message: "Legacy broadcast",
+                targets: [kitchen, office, bedroom],
+                voicePreset: .defaultPreset,
+                ttsEngines: []
+            )
+            #expect(Bool(false), "Expected partialDelivery")
+        } catch let error as HomeAssistantError {
+            #expect(error == .partialDelivery(failedEntityIDs: ["media_player.office"], reason: "Home Assistant returned status 500."))
+        }
+        #expect(attempted == ["media_player.kitchen", "media_player.office", "media_player.bedroom"])
+    }
+
+    @Test func cloudSayFallbackThrowsOriginalErrorWhenEverySpeakerFails() async {
+        let token = "fallback-allfail-token"
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
+            speakResponse(request, status: 500)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        do {
+            try await makeClient().sendTTS(
+                serverURL: "https://ha.local:8123",
+                token: token,
+                message: "Legacy broadcast",
+                targets: [kitchen, office],
+                voicePreset: .defaultPreset,
+                ttsEngines: []
+            )
+            #expect(Bool(false), "Expected serviceFailed")
+        } catch let error as HomeAssistantError {
+            #expect(error == .serviceFailed(500))
+        } catch {
+            #expect(Bool(false), "Unexpected error type: \(error)")
+        }
+    }
+
+    @Test @MainActor func partialDeliverySplitsHistorySoRetryOnlyTargetsMissedSpeakers() async throws {
+        let token = "fallback-split-token"
+        var attempted: [String] = []
+        ClientMockURLProtocol.setHandler(forToken: token) { request in
+            let id = entityID(of: request) ?? ""
+            attempted.append(id)
+            return speakResponse(request, status: id == "media_player.office" ? 500 : 200)
+        }
+        defer { ClientMockURLProtocol.removeHandler(forToken: token) }
+
+        let state = AppState(
+            client: makeClient(),
+            keychain: KeychainTokenStore(),
+            defaults: UserDefaults(suiteName: "SpeakPartialTests-\(UUID().uuidString)")!
+        )
+        state.serverProfile = ServerProfile(serverURL: "https://ha.local:8123", displayName: "HA", lastConnectionStatus: .connected)
+        state.token = token
+        state.ttsEngines = []
+
+        let record = MessageRecord(
+            id: UUID(), text: "Dinner", targets: [kitchen, office], voicePreset: .defaultPreset,
+            sentAt: Date(), status: .sent, errorMessage: nil, kind: .single, detail: nil
+        )
+        state.resend(record)
+        for _ in 0..<200 where state.messages.count < 2 || state.messages.contains(where: { $0.status == .sending }) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(state.messages.count == 2)
+        let sent = try #require(state.messages.first)
+        let failed = try #require(state.messages.last)
+        #expect(sent.status == .sent)
+        #expect(sent.targets.map(\.entityID) == ["media_player.kitchen"])
+        #expect(failed.status == .failed)
+        #expect(failed.targets.map(\.entityID) == ["media_player.office"])
+
+        attempted.removeAll()
+        state.retry(failed)
+        for _ in 0..<200 where attempted.isEmpty || state.messages.contains(where: { $0.status == .sending }) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(attempted == ["media_player.office"])
+    }
+
+    @Test @MainActor func presetAvailabilityFollowsDiscoveredEngines() {
+        let state = AppState(
+            client: makeClient(),
+            keychain: KeychainTokenStore(),
+            defaults: UserDefaults(suiteName: "SpeakAvailabilityTests-\(UUID().uuidString)")!
+        )
+        let piper = VoicePreset(id: UUID(), name: "Piper", language: "en-US", voice: "", isCustom: true, engineID: "tts.piper")
+        let cloud = VoicePreset(id: UUID(), name: "Jenny", language: "en-US", voice: "JennyNeural", isCustom: true, engineID: VoicePreset.cloudEngineID)
+
+        state.ttsEngines = [TTSEngine(entityID: "tts.google_translate_en_com", name: "Google")]
+        #expect(state.isPresetAvailable(.defaultPreset))
+        #expect(!state.isPresetAvailable(piper))
+        #expect(!state.isPresetAvailable(cloud))
+
+        state.ttsEngines = []
+        #expect(state.isPresetAvailable(.defaultPreset))
+        #expect(state.isPresetAvailable(cloud))
+        #expect(!state.isPresetAvailable(piper))
+    }
 }

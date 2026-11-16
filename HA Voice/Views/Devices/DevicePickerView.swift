@@ -4,9 +4,11 @@ struct DevicePickerView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var appState: AppState
     @State private var searchText = ""
+    // Selected-first order is fixed when the picker opens so rows don't jump while tapping.
+    @State private var initiallySelectedIDs: Set<String>?
 
     var sortedDevices: [MediaPlayerTarget] {
-        let selectedSet = Set(appState.selectedTargetIDs)
+        let selectedSet = initiallySelectedIDs ?? Set(appState.selectedTargetIDs)
         let selected = appState.mediaPlayers.filter { selectedSet.contains($0.entityID) }
         let unselected = appState.mediaPlayers.filter { !selectedSet.contains($0.entityID) }
         return selected + unselected
@@ -74,6 +76,9 @@ struct DevicePickerView: View {
                 }
             }
             .searchable(text: $searchText, prompt: "Search speakers")
+            .onAppear {
+                initiallySelectedIDs = Set(appState.selectedTargetIDs)
+            }
             .navigationTitle("Speakers")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
