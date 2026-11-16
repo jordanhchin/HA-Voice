@@ -438,5 +438,55 @@ struct SavedPhraseTests {
         #expect(state.selectedTargetIDs == [bedroom.entityID])
         #expect(state.hasUnavailableTargetOrVoice(for: unavailableEnginePhrase))
     }
-}
 
+    @Test func phraseUIHelpersFormatAccessibilityValidationPrefillAndSummary() throws {
+        // canSave
+        #expect(!SavedPhrase.canSave(draft: ComposerDraft(message: "   ", mode: .once)))
+        #expect(SavedPhrase.canSave(draft: ComposerDraft(message: "Hello", mode: .once)))
+        #expect(!SavedPhrase.canSave(draft: ComposerDraft(mode: .countdown, countdownTemplate: "  ", finalMessage: "  ")))
+        #expect(SavedPhrase.canSave(draft: ComposerDraft(mode: .countdown, countdownTemplate: "{minutes}", finalMessage: "  ")))
+        #expect(SavedPhrase.canSave(draft: ComposerDraft(mode: .countdown, countdownTemplate: "  ", finalMessage: "Go!")))
+
+        // suggestedName
+        let longDraft = ComposerDraft(message: "  Dinner is ready in the kitchen right now please come down  ", mode: .once)
+        let suggestedLong = SavedPhrase.suggestedName(from: longDraft)
+        #expect(suggestedLong.count <= 30)
+        #expect(suggestedLong == "Dinner is ready in the kitchen")
+
+        let countdownDraft = ComposerDraft(mode: .countdown, countdownMinutes: 10, finalMessage: "Time to leave for school")
+        #expect(SavedPhrase.suggestedName(from: countdownDraft) == "Time to leave for school")
+
+        // stripIconName & chipAccessibilityLabel
+        let oncePhrase = SavedPhrase(name: "Hello", draft: ComposerDraft(message: "Hello", mode: .once), targetIDs: [kitchen.entityID], voicePresetID: VoicePreset.defaultPreset.id)
+        #expect(oncePhrase.stripIconName == nil)
+        #expect(oncePhrase.chipAccessibilityLabel == "Phrase: Hello")
+
+        let countdownPhrase = SavedPhrase(
+            name: "Dinner's ready",
+            draft: ComposerDraft(mode: .countdown, countdownMinutes: 10),
+            targetIDs: [kitchen.entityID, office.entityID],
+            voicePresetID: VoicePreset.defaultPreset.id
+        )
+        #expect(countdownPhrase.stripIconName == "timer")
+        #expect(countdownPhrase.chipAccessibilityLabel == "Phrase: Dinner's ready, countdown 10 minutes")
+
+        let repeatPhrase = SavedPhrase(
+            name: "Wake up",
+            draft: ComposerDraft(message: "Wake up", mode: .repeatCount, repeatCount: 4),
+            targetIDs: [kitchen.entityID],
+            voicePresetID: VoicePreset.defaultPreset.id
+        )
+        #expect(repeatPhrase.stripIconName == "number")
+        #expect(repeatPhrase.chipAccessibilityLabel == "Phrase: Wake up, repeat 4 times")
+
+        // summary
+        let jenny = try #require(VoicePreset.builtIns.first { $0.name == "Jenny" })
+        let multiSpeakerPhrase = SavedPhrase(
+            name: "Dinner",
+            draft: ComposerDraft(mode: .countdown, countdownMinutes: 10),
+            targetIDs: [kitchen.entityID, office.entityID],
+            voicePresetID: jenny.id
+        )
+        #expect(multiSpeakerPhrase.summary(mediaPlayers: [kitchen, office], voicePresets: VoicePreset.builtIns) == "Countdown 10 min · Kitchen + 1 · Jenny")
+    }
+}

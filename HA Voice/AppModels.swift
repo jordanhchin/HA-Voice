@@ -450,6 +450,92 @@ struct SavedPhrase: Identifiable, Codable, Equatable {
         self.targetIDs = PersistedAppState.uniqueTargetIDs(targetIDs)
         self.voicePresetID = voicePresetID
     }
+
+    var stripIconName: String? {
+        switch draft.mode {
+        case .repeatCount, .repeatDuration, .repeatIndefinitely, .countdown:
+            draft.mode.iconName
+        case .once, .onceAs:
+            nil
+        }
+    }
+
+    var chipAccessibilityLabel: String {
+        switch draft.mode {
+        case .once, .onceAs:
+            "Phrase: \(name)"
+        case .repeatCount:
+            "Phrase: \(name), repeat \(draft.repeatCount) times"
+        case .repeatDuration:
+            "Phrase: \(name), repeat \(draft.repeatDurationMinutes) minutes"
+        case .repeatIndefinitely:
+            "Phrase: \(name), repeat until stopped"
+        case .countdown:
+            "Phrase: \(name), countdown \(draft.countdownMinutes) minutes"
+        }
+    }
+
+    static func canSave(draft: ComposerDraft) -> Bool {
+        if draft.mode == .countdown {
+            let hasTemplate = !draft.countdownTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let hasFinal = !draft.finalMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return hasTemplate || hasFinal
+        }
+        return !draft.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func suggestedName(from draft: ComposerDraft) -> String {
+        let rawSource: String
+        if draft.mode == .countdown {
+            let trimmedFinal = draft.finalMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            rawSource = trimmedFinal.isEmpty ? draft.countdownTemplate : trimmedFinal
+        } else {
+            rawSource = draft.message
+        }
+
+        let collapsed = rawSource
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        guard collapsed.count > 30 else { return collapsed }
+        return String(collapsed.prefix(30)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func summary(mediaPlayers: [MediaPlayerTarget], voicePresets: [VoicePreset]) -> String {
+        let modeSummary: String
+        switch draft.mode {
+        case .once:
+            modeSummary = "Once"
+        case .onceAs:
+            modeSummary = "Once As"
+        case .repeatCount:
+            modeSummary = "Repeat \(draft.repeatCount)×"
+        case .repeatDuration:
+            modeSummary = "Repeat \(draft.repeatDurationMinutes) min"
+        case .repeatIndefinitely:
+            modeSummary = "Until Stopped"
+        case .countdown:
+            modeSummary = "Countdown \(draft.countdownMinutes) min"
+        }
+
+        let playersByID = Dictionary(uniqueKeysWithValues: mediaPlayers.map { ($0.entityID, $0.displayName) })
+        let speakerSummary: String
+        if let firstID = targetIDs.first {
+            let firstName = playersByID[firstID] ?? firstID
+            if targetIDs.count > 1 {
+                speakerSummary = "\(firstName) + \(targetIDs.count - 1)"
+            } else {
+                speakerSummary = firstName
+            }
+        } else {
+            speakerSummary = "No speakers"
+        }
+
+        let voiceSummary = voicePresets.first(where: { $0.id == voicePresetID })?.name ?? "Unavailable voice"
+
+        return "\(modeSummary) · \(speakerSummary) · \(voiceSummary)"
+    }
 }
 
 struct PhraseApplyResult: Equatable {

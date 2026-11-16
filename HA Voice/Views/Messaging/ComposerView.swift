@@ -6,6 +6,8 @@ struct ComposerView: View {
     let send: () -> Void
 
     @State private var showingDevicePicker = false
+    @State private var showingSavePrompt = false
+    @State private var savePhraseName = ""
 
     static func targetChipText(for targets: [MediaPlayerTarget]) -> String {
         guard let first = targets.first else {
@@ -19,7 +21,7 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
+            HStack(spacing: 8) {
                 Button {
                     showingDevicePicker = true
                 } label: {
@@ -32,6 +34,21 @@ struct ComposerView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Target speakers: \(Self.targetChipText(for: appState.selectedTargets))")
+
+                Button {
+                    savePhraseName = SavedPhrase.suggestedName(from: draft)
+                    showingSavePrompt = true
+                } label: {
+                    Image(systemName: "bookmark")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(SavedPhrase.canSave(draft: draft) ? .primary : .tertiary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(!SavedPhrase.canSave(draft: draft))
+                .accessibilityLabel("Save as phrase")
 
                 Spacer()
             }
@@ -71,6 +88,16 @@ struct ComposerView: View {
         .background(.regularMaterial)
         .sheet(isPresented: $showingDevicePicker) {
             DevicePickerView(appState: appState)
+        }
+        .alert("Save Phrase", isPresented: $showingSavePrompt) {
+            TextField("Phrase name", text: $savePhraseName)
+            Button("Save") {
+                appState.savePhrase(name: savePhraseName, draft: draft)
+            }
+            .disabled(savePhraseName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Save the current message, mode, speakers, and voice for quick reuse.")
         }
     }
 

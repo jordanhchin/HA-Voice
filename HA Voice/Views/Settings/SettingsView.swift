@@ -83,6 +83,19 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Phrases") {
+                    NavigationLink {
+                        SavedPhrasesManageView(appState: appState)
+                    } label: {
+                        HStack {
+                            Label("Saved Phrases", systemImage: "bookmark")
+                            Spacer()
+                            Text("\(appState.savedPhrases.count)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 Section("Repeats") {
                     Text("Repeated and countdown messages keep running while the app is active. In the background, HA Voice requests short extra time, but iOS may pause longer sessions.")
                         .foregroundStyle(.secondary)
