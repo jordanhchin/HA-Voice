@@ -13,8 +13,37 @@ struct ComposerView: View {
     @Binding var finalMessage: String
     let send: () -> Void
 
+    @State private var showingDevicePicker = false
+
+    static func targetChipText(for targets: [MediaPlayerTarget]) -> String {
+        guard let first = targets.first else {
+            return "No speaker selected"
+        }
+        if targets.count == 1 {
+            return first.displayName
+        }
+        return "\(first.displayName) + \(targets.count - 1)"
+    }
+
     var body: some View {
         VStack(spacing: 12) {
+            HStack {
+                Button {
+                    showingDevicePicker = true
+                } label: {
+                    Label(Self.targetChipText(for: appState.selectedTargets), systemImage: "speaker.wave.2.fill")
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Target speakers: \(Self.targetChipText(for: appState.selectedTargets))")
+
+                Spacer()
+            }
+
             ModeControlsPanel(
                 mode: mode,
                 repeatCount: $repeatCount,
@@ -55,6 +84,9 @@ struct ComposerView: View {
         }
         .padding()
         .background(.regularMaterial)
+        .sheet(isPresented: $showingDevicePicker) {
+            DevicePickerView(appState: appState)
+        }
     }
 
     private var sendIcon: String {
@@ -62,7 +94,7 @@ struct ComposerView: View {
     }
 
     private var sendDisabled: Bool {
-        appState.selectedTarget == nil ||
+        appState.selectedTargets.isEmpty ||
         (mode != .countdown && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
         (mode == .onceAs && appState.senderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }

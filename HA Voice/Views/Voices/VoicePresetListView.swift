@@ -6,6 +6,30 @@ struct VoicePresetListView: View {
     @State private var editingPreset: VoicePreset?
     @State private var addingPreset = false
 
+    static func engineDisplayName(for preset: VoicePreset, engines: [TTSEngine]) -> String? {
+        guard let engineID = preset.engineID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !engineID.isEmpty else {
+            return nil
+        }
+        if let engine = engines.first(where: { $0.entityID == engineID }) {
+            return engine.displayName
+        }
+        if engineID == VoicePreset.cloudEngineID {
+            return "Home Assistant Cloud"
+        }
+        return engineID
+    }
+
+    static func subtitle(for preset: VoicePreset, engines: [TTSEngine]) -> String {
+        if let engineName = engineDisplayName(for: preset, engines: engines) {
+            if let voice = preset.serviceVoice {
+                return "\(engineName) · \(voice)"
+            }
+            return engineName
+        }
+        return preset.serviceVoice ?? "Uses Home Assistant default"
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -18,7 +42,7 @@ struct VoicePresetListView: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(preset.name)
-                                    Text(preset.serviceVoice ?? "Uses Home Assistant default")
+                                    Text(Self.subtitle(for: preset, engines: appState.ttsEngines))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -81,14 +105,32 @@ private struct VoicePresetEditorView: View {
             name: preset.name,
             language: preset.language,
             voice: preset.voice,
-            isCustom: true
+            isCustom: true,
+            engineID: preset.engineID
         ))
+    }
+
+    private var availableEngines: [TTSEngine] {
+        var engines = appState.ttsEngines
+        if let currentID = preset.engineID,
+           !currentID.isEmpty,
+           !engines.contains(where: { $0.entityID == currentID }) {
+            let fallbackName = currentID == VoicePreset.cloudEngineID ? "Home Assistant Cloud" : currentID
+            engines.append(TTSEngine(entityID: currentID, name: fallbackName))
+        }
+        return engines
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 TextField("Name", text: $preset.name)
+                Picker("Engine", selection: $preset.engineID) {
+                    Text("Server default").tag(String?.none)
+                    ForEach(availableEngines) { engine in
+                        Text(engine.displayName).tag(String?.some(engine.entityID))
+                    }
+                }
                 TextField("Language", text: $preset.language)
                     .textInputAutocapitalization(.never)
                 TextField("Voice option", text: $preset.voice)

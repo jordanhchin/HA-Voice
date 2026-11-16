@@ -5,9 +5,16 @@ struct DevicePickerView: View {
     @Bindable var appState: AppState
     @State private var searchText = ""
 
+    var sortedDevices: [MediaPlayerTarget] {
+        let selectedSet = Set(appState.selectedTargetIDs)
+        let selected = appState.mediaPlayers.filter { selectedSet.contains($0.entityID) }
+        let unselected = appState.mediaPlayers.filter { !selectedSet.contains($0.entityID) }
+        return selected + unselected
+    }
+
     var filteredDevices: [MediaPlayerTarget] {
-        guard !searchText.isEmpty else { return appState.mediaPlayers }
-        return appState.mediaPlayers.filter {
+        guard !searchText.isEmpty else { return sortedDevices }
+        return sortedDevices.filter {
             $0.displayName.localizedCaseInsensitiveContains(searchText) ||
             $0.entityID.localizedCaseInsensitiveContains(searchText)
         }
@@ -21,24 +28,45 @@ struct DevicePickerView: View {
                         .foregroundStyle(.red)
                 }
 
+                if !appState.mediaPlayers.isEmpty {
+                    Section {
+                        HStack {
+                            Button("Select all") {
+                                appState.selectAllTargets()
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(appState.selectedTargets.count == appState.mediaPlayers.count)
+
+                            Spacer()
+
+                            Button("Clear") {
+                                appState.clearTargetSelection()
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(appState.selectedTargets.count <= 1)
+                        }
+                    }
+                }
+
                 if filteredDevices.isEmpty {
                     ContentUnavailableView("No Media Players", systemImage: "speaker.slash")
                 } else {
-                    ForEach(filteredDevices) { device in
-                        Button {
-                            appState.selectedTarget = device
-                            dismiss()
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(device.displayName)
-                                    Text(device.entityID)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if appState.selectedTargetID == device.entityID {
-                                    Image(systemName: "checkmark")
+                    Section {
+                        ForEach(filteredDevices) { device in
+                            Button {
+                                appState.toggleTargetSelection(device)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(device.displayName)
+                                        Text(device.entityID)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if appState.isTargetSelected(device) {
+                                        Image(systemName: "checkmark")
+                                    }
                                 }
                             }
                         }

@@ -95,7 +95,7 @@ private struct MessageBubbleView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Label(record.target.displayName, systemImage: "speaker.wave.2.fill")
+                    Label(record.targetsDisplayName, systemImage: "speaker.wave.2.fill")
                     Label(record.voicePreset.name, systemImage: "waveform")
                     if let detail = record.detail {
                         Label(detail, systemImage: record.kind == .countdown ? "timer" : "repeat")
