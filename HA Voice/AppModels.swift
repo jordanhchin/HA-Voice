@@ -360,7 +360,7 @@ struct CountdownSession: Identifiable, Codable, Equatable {
     }
 }
 
-enum ComposerMode: String, CaseIterable, Identifiable {
+enum ComposerMode: String, CaseIterable, Identifiable, Codable {
     case once
     case onceAs
     case repeatCount
@@ -390,6 +390,43 @@ enum ComposerMode: String, CaseIterable, Identifiable {
         case .repeatIndefinitely: "infinity"
         case .countdown: "timer"
         }
+    }
+}
+
+struct ComposerDraft: Codable, Equatable {
+    static let defaultCountdownTemplate = "You have {minutes} minutes until it's time to go."
+    static let defaultFinalMessage = "It's time to go."
+
+    var message: String
+    var mode: ComposerMode
+    var repeatCount: Int
+    var repeatDurationMinutes: Int
+    var repeatIntervalSeconds: Int
+    var countdownMinutes: Int
+    var countdownIntervalMinutes: Int
+    var countdownTemplate: String
+    var finalMessage: String
+
+    init(
+        message: String = "",
+        mode: ComposerMode = .once,
+        repeatCount: Int = 3,
+        repeatDurationMinutes: Int = 5,
+        repeatIntervalSeconds: Int = 60,
+        countdownMinutes: Int = 10,
+        countdownIntervalMinutes: Int = 1,
+        countdownTemplate: String = ComposerDraft.defaultCountdownTemplate,
+        finalMessage: String = ComposerDraft.defaultFinalMessage
+    ) {
+        self.message = message
+        self.mode = mode
+        self.repeatCount = repeatCount
+        self.repeatDurationMinutes = repeatDurationMinutes
+        self.repeatIntervalSeconds = repeatIntervalSeconds
+        self.countdownMinutes = countdownMinutes
+        self.countdownIntervalMinutes = countdownIntervalMinutes
+        self.countdownTemplate = countdownTemplate
+        self.finalMessage = finalMessage
     }
 }
 

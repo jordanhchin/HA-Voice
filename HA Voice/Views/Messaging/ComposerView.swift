@@ -2,15 +2,7 @@ import SwiftUI
 
 struct ComposerView: View {
     @Bindable var appState: AppState
-    @Binding var message: String
-    @Binding var mode: ComposerMode
-    @Binding var repeatCount: Int
-    @Binding var repeatDurationMinutes: Int
-    @Binding var repeatIntervalSeconds: Int
-    @Binding var countdownMinutes: Int
-    @Binding var countdownIntervalMinutes: Int
-    @Binding var countdownTemplate: String
-    @Binding var finalMessage: String
+    @Binding var draft: ComposerDraft
     let send: () -> Void
 
     @State private var showingDevicePicker = false
@@ -45,18 +37,11 @@ struct ComposerView: View {
             }
 
             ModeControlsPanel(
-                mode: mode,
-                repeatCount: $repeatCount,
-                repeatDurationMinutes: $repeatDurationMinutes,
-                repeatIntervalSeconds: $repeatIntervalSeconds,
-                countdownMinutes: $countdownMinutes,
-                countdownIntervalMinutes: $countdownIntervalMinutes,
-                countdownTemplate: $countdownTemplate,
-                finalMessage: $finalMessage,
+                draft: $draft,
                 senderName: appState.senderName
             )
 
-            if mode == .countdown {
+            if draft.mode == .countdown {
                 Button(action: send) {
                     Label("Start Countdown", systemImage: sendIcon)
                         .font(.headline)
@@ -66,7 +51,7 @@ struct ComposerView: View {
                 .disabled(sendDisabled)
             } else {
                 HStack(alignment: .center, spacing: 10) {
-                    TextField("Message", text: $message, axis: .vertical)
+                    TextField("Message", text: $draft.message, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1...5)
 
@@ -78,7 +63,7 @@ struct ComposerView: View {
                     .buttonStyle(.borderedProminent)
                     .clipShape(Circle())
                     .disabled(sendDisabled)
-                    .accessibilityLabel(mode == .once || mode == .onceAs ? "Send message" : "Start")
+                    .accessibilityLabel(draft.mode == .once || draft.mode == .onceAs ? "Send message" : "Start")
                 }
             }
         }
@@ -90,13 +75,13 @@ struct ComposerView: View {
     }
 
     private var sendIcon: String {
-        mode == .once || mode == .onceAs ? "paperplane.fill" : "play.fill"
+        draft.mode == .once || draft.mode == .onceAs ? "paperplane.fill" : "play.fill"
     }
 
     private var sendDisabled: Bool {
         appState.selectedTargets.isEmpty ||
-        (mode != .countdown && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
-        (mode == .onceAs && appState.senderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        (draft.mode != .countdown && draft.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
+        (draft.mode == .onceAs && appState.senderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 }
 
@@ -120,44 +105,37 @@ struct ModeMenuButton: View {
 }
 
 private struct ModeControlsPanel: View {
-    let mode: ComposerMode
-    @Binding var repeatCount: Int
-    @Binding var repeatDurationMinutes: Int
-    @Binding var repeatIntervalSeconds: Int
-    @Binding var countdownMinutes: Int
-    @Binding var countdownIntervalMinutes: Int
-    @Binding var countdownTemplate: String
-    @Binding var finalMessage: String
+    @Binding var draft: ComposerDraft
     let senderName: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             CompactModeSummary(
-                iconName: mode.iconName,
+                iconName: draft.mode.iconName,
                 title: summaryTitle,
                 subtitle: summarySubtitle
             )
 
-            switch mode {
+            switch draft.mode {
             case .once:
                 EmptyView()
             case .onceAs:
                 EmptyView()
             case .repeatCount:
-                Stepper("Repeat \(repeatCount) times", value: $repeatCount, in: 1...100)
+                Stepper("Repeat \(draft.repeatCount) times", value: $draft.repeatCount, in: 1...100)
                 intervalStepper
             case .repeatDuration:
-                Stepper("Repeat for \(repeatDurationMinutes) min", value: $repeatDurationMinutes, in: 1...180)
+                Stepper("Repeat for \(draft.repeatDurationMinutes) min", value: $draft.repeatDurationMinutes, in: 1...180)
                 intervalStepper
             case .repeatIndefinitely:
                 intervalStepper
             case .countdown:
-                Stepper("Countdown \(countdownMinutes) min", value: $countdownMinutes, in: 1...240)
-                Stepper("Speak every \(countdownIntervalMinutes) min", value: $countdownIntervalMinutes, in: 1...60)
-                TextField("Countdown message template", text: $countdownTemplate, axis: .vertical)
+                Stepper("Countdown \(draft.countdownMinutes) min", value: $draft.countdownMinutes, in: 1...240)
+                Stepper("Speak every \(draft.countdownIntervalMinutes) min", value: $draft.countdownIntervalMinutes, in: 1...60)
+                TextField("Countdown message template", text: $draft.countdownTemplate, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...3)
-                TextField("Final message", text: $finalMessage)
+                TextField("Final message", text: $draft.finalMessage)
                     .textFieldStyle(.roundedBorder)
             }
         }
@@ -169,7 +147,7 @@ private struct ModeControlsPanel: View {
     }
 
     private var intervalStepper: some View {
-        Stepper("Every \(repeatIntervalSeconds) sec", value: $repeatIntervalSeconds, in: 5...3600, step: 5)
+        Stepper("Every \(draft.repeatIntervalSeconds) sec", value: $draft.repeatIntervalSeconds, in: 5...3600, step: 5)
     }
 
     private var senderDisplayName: String {
@@ -178,24 +156,24 @@ private struct ModeControlsPanel: View {
     }
 
     private var summaryTitle: String {
-        switch mode {
+        switch draft.mode {
         case .once:
             "Send once"
         case .onceAs:
             "Send once as \(senderDisplayName)"
         case .repeatCount:
-            "Repeat \(repeatCount) times"
+            "Repeat \(draft.repeatCount) times"
         case .repeatDuration:
-            "Repeat for \(repeatDurationMinutes) min"
+            "Repeat for \(draft.repeatDurationMinutes) min"
         case .repeatIndefinitely:
             "Repeat until stopped"
         case .countdown:
-            "Countdown \(countdownMinutes) min"
+            "Countdown \(draft.countdownMinutes) min"
         }
     }
 
     private var summarySubtitle: String {
-        switch mode {
+        switch draft.mode {
         case .once:
             "Message is spoken exactly as written."
         case .onceAs:
@@ -203,13 +181,13 @@ private struct ModeControlsPanel: View {
             ? "Set Name in Settings to add a sender prefix."
             : "Prepends \"\(senderDisplayName) says:\" before speaking."
         case .repeatCount:
-            "Speaks the message \(repeatCount) times, every \(repeatIntervalSeconds) sec."
+            "Speaks the message \(draft.repeatCount) times, every \(draft.repeatIntervalSeconds) sec."
         case .repeatDuration:
-            "Keeps speaking for \(repeatDurationMinutes) min, every \(repeatIntervalSeconds) sec."
+            "Keeps speaking for \(draft.repeatDurationMinutes) min, every \(draft.repeatIntervalSeconds) sec."
         case .repeatIndefinitely:
             "Runs until stopped. Background delivery is best-effort."
         case .countdown:
-            "Speaks remaining time every \(countdownIntervalMinutes) min, then the final message."
+            "Speaks remaining time every \(draft.countdownIntervalMinutes) min, then the final message."
         }
     }
 }

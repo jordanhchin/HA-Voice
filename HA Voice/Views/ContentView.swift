@@ -3,7 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var appState = AppState()
-    @State private var mode: ComposerMode = .once
+    @State private var draft = ComposerDraft()
     @State private var showingDevices = false
     @State private var showingSettings = false
 
@@ -12,7 +12,7 @@ struct ContentView: View {
             if appState.hasServerConfiguration {
                 MainMessagingView(
                     appState: appState,
-                    mode: $mode
+                    draft: $draft
                 )
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
@@ -22,7 +22,7 @@ struct ContentView: View {
                     }
 
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        ModeMenuButton(mode: $mode)
+                        ModeMenuButton(mode: $draft.mode)
 
                         Button {
                             showingDevices = true

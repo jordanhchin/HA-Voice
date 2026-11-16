@@ -227,48 +227,38 @@ final class AppState {
         }
     }
 
-    func sendComposerMessage(
-        text: String,
-        mode: ComposerMode,
-        repeatCount: Int,
-        repeatDurationMinutes: Int,
-        repeatIntervalSeconds: Int,
-        countdownMinutes: Int,
-        countdownIntervalMinutes: Int,
-        countdownTemplate: String,
-        finalMessage: String
-    ) {
+    func sendComposerMessage(_ draft: ComposerDraft) {
         let targets = selectedTargets
         guard !targets.isEmpty else { return }
         let voice = selectedVoice
-        let interval = max(TimeInterval(repeatIntervalSeconds), 5)
+        let interval = max(TimeInterval(draft.repeatIntervalSeconds), 5)
 
-        switch mode {
+        switch draft.mode {
         case .once:
-            Task { await sendMessage(text, targets: targets, voice: voice, kind: .single, detail: nil) }
+            Task { await sendMessage(draft.message, targets: targets, voice: voice, kind: .single, detail: nil) }
         case .onceAs:
-            let formattedMessage = Self.messageWithSenderName(text, senderName: senderName)
+            let formattedMessage = Self.messageWithSenderName(draft.message, senderName: senderName)
             Task { await sendMessage(formattedMessage, targets: targets, voice: voice, kind: .singleAs, detail: senderDetail) }
         case .repeatCount:
-            startRepeat(message: text, targets: targets, voice: voice, interval: interval, limit: .count(max(repeatCount, 1)))
+            startRepeat(message: draft.message, targets: targets, voice: voice, interval: interval, limit: .count(max(draft.repeatCount, 1)))
         case .repeatDuration:
             startRepeat(
-                message: text,
+                message: draft.message,
                 targets: targets,
                 voice: voice,
                 interval: interval,
-                limit: .duration(TimeInterval(max(repeatDurationMinutes, 1) * 60))
+                limit: .duration(TimeInterval(max(draft.repeatDurationMinutes, 1) * 60))
             )
         case .repeatIndefinitely:
-            startRepeat(message: text, targets: targets, voice: voice, interval: interval, limit: .indefinitely)
+            startRepeat(message: draft.message, targets: targets, voice: voice, interval: interval, limit: .indefinitely)
         case .countdown:
             startCountdown(
-                totalDuration: TimeInterval(max(countdownMinutes, 1) * 60),
-                interval: TimeInterval(max(countdownIntervalMinutes, 1) * 60),
+                totalDuration: TimeInterval(max(draft.countdownMinutes, 1) * 60),
+                interval: TimeInterval(max(draft.countdownIntervalMinutes, 1) * 60),
                 targets: targets,
                 voice: voice,
-                template: countdownTemplate,
-                finalMessage: finalMessage
+                template: draft.countdownTemplate,
+                finalMessage: draft.finalMessage
             )
         }
     }
