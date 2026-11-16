@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import SwiftUI
 import UIKit
 
 @MainActor
@@ -15,6 +16,7 @@ final class AppState {
     var voicePresets: [VoicePreset] = VoicePreset.builtIns
     var selectedVoiceID: UUID = VoicePreset.defaultPreset.id
     var messages: [MessageRecord] = []
+    var savedPhrases: [SavedPhrase] = []
     var repeatSessions: [RepeatSession] = []
     var countdownSessions: [CountdownSession] = []
     var isRefreshingDevices = false
@@ -319,6 +321,109 @@ final class AppState {
     func clearHistory() {
         messages.removeAll()
         persist()
+    }
+
+    @discardableResult
+    func savePhrase(name: String, draft: ComposerDraft) -> SavedPhrase {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let phrase = SavedPhrase(
+            name: trimmedName.isEmpty ? "Saved Phrase" : trimmedName,
+            draft: draft,
+            targetIDs: PersistedAppState.uniqueTargetIDs(selectedTargetIDs),
+            voicePresetID: selectedVoiceID
+        )
+        savedPhrases.append(phrase)
+        persist()
+        return phrase
+    }
+
+    func updatePhrase(_ phrase: SavedPhrase, with draft: ComposerDraft) {
+        guard let index = savedPhrases.firstIndex(where: { $0.id == phrase.id }) else { return }
+        savedPhrases[index].draft = draft
+        savedPhrases[index].targetIDs = PersistedAppState.uniqueTargetIDs(selectedTargetIDs)
+        savedPhrases[index].voicePresetID = selectedVoiceID
+        persist()
+    }
+
+    func renamePhrase(_ phrase: SavedPhrase, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = savedPhrases.firstIndex(where: { $0.id == phrase.id }) else {
+            return
+        }
+        savedPhrases[index].name = trimmed
+        persist()
+    }
+
+    func deletePhrase(_ phrase: SavedPhrase) {
+        let originalCount = savedPhrases.count
+        savedPhrases.removeAll { $0.id == phrase.id }
+        if savedPhrases.count != originalCount {
+            persist()
+        }
+    }
+
+    func deletePhrases(at offsets: IndexSet) {
+        savedPhrases.remove(atOffsets: offsets)
+        persist()
+    }
+
+    func movePhrases(fromOffsets source: IndexSet, toOffset destination: Int) {
+        savedPhrases.move(fromOffsets: source, toOffset: destination)
+        persist()
+    }
+
+    @discardableResult
+    func apply(_ phrase: SavedPhrase) -> PhraseApplyResult {
+        let validIDs = Set(mediaPlayers.map(\.entityID))
+        let requestedTargetIDs = PersistedAppState.uniqueTargetIDs(phrase.targetIDs)
+        let matchedTargetIDs = requestedTargetIDs.filter { validIDs.contains($0) }
+        let missingSpeakerCount = requestedTargetIDs.count - matchedTargetIDs.count
+        let allSpeakersMissing = !requestedTargetIDs.isEmpty && matchedTargetIDs.isEmpty
+
+        var didChangeSelection = false
+        if !matchedTargetIDs.isEmpty && selectedTargetIDs != matchedTargetIDs {
+            selectedTargetIDs = matchedTargetIDs
+            didChangeSelection = true
+        }
+
+        let voiceUnavailable: Bool
+        if let preset = voicePresets.first(where: { $0.id == phrase.voicePresetID }),
+           isPresetAvailable(preset) {
+            if selectedVoiceID != preset.id {
+                selectedVoiceID = preset.id
+                didChangeSelection = true
+            }
+            voiceUnavailable = false
+        } else {
+            voiceUnavailable = true
+        }
+
+        if didChangeSelection {
+            persist()
+        }
+
+        return PhraseApplyResult(
+            missingSpeakerCount: missingSpeakerCount,
+            allSpeakersMissing: allSpeakersMissing,
+            voiceUnavailable: voiceUnavailable
+        )
+    }
+
+    func missingSpeakerCount(for phrase: SavedPhrase) -> Int {
+        let validIDs = Set(mediaPlayers.map(\.entityID))
+        return PersistedAppState.uniqueTargetIDs(phrase.targetIDs).filter { !validIDs.contains($0) }.count
+    }
+
+    func isVoiceAvailable(for phrase: SavedPhrase) -> Bool {
+        guard let preset = voicePresets.first(where: { $0.id == phrase.voicePresetID }) else {
+            return false
+        }
+        return isPresetAvailable(preset)
+    }
+
+    func hasUnavailableTargetOrVoice(for phrase: SavedPhrase) -> Bool {
+        missingSpeakerCount(for: phrase) > 0 || !isVoiceAvailable(for: phrase)
     }
 
     func stopRepeat(_ session: RepeatSession) {
@@ -846,6 +951,7 @@ final class AppState {
             ttsEngines = state.ttsEngines
             voicePresets = Self.presetsByAddingMissingBuiltIns(to: state.voicePresets)
             messages = state.messages
+            savedPhrases = state.savedPhrases
             normalizeSelectedTargets()
         } catch {
             Logger.persistence.error("Failed to decode persisted state: \(error.localizedDescription, privacy: .public)")
@@ -899,7 +1005,8 @@ final class AppState {
             mediaPlayers: mediaPlayers,
             ttsEngines: ttsEngines,
             voicePresets: voicePresets,
-            messages: Array(messages.suffix(200))
+            messages: Array(messages.suffix(200)),
+            savedPhrases: savedPhrases
         )
         do {
             let data = try JSONEncoder().encode(state)

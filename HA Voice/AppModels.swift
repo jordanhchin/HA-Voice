@@ -430,6 +430,57 @@ struct ComposerDraft: Codable, Equatable {
     }
 }
 
+struct SavedPhrase: Identifiable, Codable, Equatable {
+    let id: UUID
+    var name: String
+    var draft: ComposerDraft
+    var targetIDs: [String]
+    var voicePresetID: UUID
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        draft: ComposerDraft,
+        targetIDs: [String],
+        voicePresetID: UUID
+    ) {
+        self.id = id
+        self.name = name
+        self.draft = draft
+        self.targetIDs = PersistedAppState.uniqueTargetIDs(targetIDs)
+        self.voicePresetID = voicePresetID
+    }
+}
+
+struct PhraseApplyResult: Equatable {
+    let missingSpeakerCount: Int
+    let allSpeakersMissing: Bool
+    let voiceUnavailable: Bool
+
+    var hasWarnings: Bool {
+        missingSpeakerCount > 0 || voiceUnavailable
+    }
+
+    var noticeMessage: String? {
+        guard hasWarnings else { return nil }
+
+        var parts: [String] = []
+        if allSpeakersMissing {
+            parts.append("Saved speakers unavailable (kept current selection)")
+        } else if missingSpeakerCount == 1 {
+            parts.append("1 saved speaker unavailable")
+        } else if missingSpeakerCount > 1 {
+            parts.append("\(missingSpeakerCount) saved speakers unavailable")
+        }
+
+        if voiceUnavailable {
+            parts.append("Saved voice unavailable (kept current voice)")
+        }
+
+        return parts.joined(separator: " · ")
+    }
+}
+
 struct PersistedAppState: Codable {
     var serverProfile: ServerProfile
     var senderName: String
@@ -439,6 +490,7 @@ struct PersistedAppState: Codable {
     var ttsEngines: [TTSEngine]
     var voicePresets: [VoicePreset]
     var messages: [MessageRecord]
+    var savedPhrases: [SavedPhrase]
 
     enum CodingKeys: String, CodingKey {
         case serverProfile
@@ -450,6 +502,7 @@ struct PersistedAppState: Codable {
         case ttsEngines
         case voicePresets
         case messages
+        case savedPhrases
     }
 
     init(
@@ -460,7 +513,8 @@ struct PersistedAppState: Codable {
         mediaPlayers: [MediaPlayerTarget],
         ttsEngines: [TTSEngine] = [],
         voicePresets: [VoicePreset],
-        messages: [MessageRecord]
+        messages: [MessageRecord],
+        savedPhrases: [SavedPhrase] = []
     ) {
         self.serverProfile = serverProfile
         self.senderName = senderName
@@ -470,6 +524,7 @@ struct PersistedAppState: Codable {
         self.ttsEngines = ttsEngines
         self.voicePresets = voicePresets
         self.messages = messages
+        self.savedPhrases = savedPhrases
     }
 
     init(from decoder: Decoder) throws {
@@ -509,6 +564,12 @@ struct PersistedAppState: Codable {
         } else {
             messages = []
         }
+
+        if let failablePhrases = try? container.decode([FailableDecodable<SavedPhrase>].self, forKey: .savedPhrases) {
+            savedPhrases = failablePhrases.compactMap(\.value)
+        } else {
+            savedPhrases = []
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -521,6 +582,7 @@ struct PersistedAppState: Codable {
         try container.encode(ttsEngines, forKey: .ttsEngines)
         try container.encode(voicePresets, forKey: .voicePresets)
         try container.encode(messages, forKey: .messages)
+        try container.encode(savedPhrases, forKey: .savedPhrases)
     }
 
     static func uniqueTargetIDs(_ ids: [String]) -> [String] {

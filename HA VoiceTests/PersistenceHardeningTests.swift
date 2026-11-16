@@ -96,6 +96,7 @@ struct PersistenceHardeningTests {
         #expect(decoded.ttsEngines.isEmpty)
         #expect(decoded.voicePresets == VoicePreset.builtIns)
         #expect(decoded.messages.isEmpty)
+        #expect(decoded.savedPhrases.isEmpty)
     }
 
     @Test func migratesLegacySelectedTargetIDSingleTargetMessagesAndPresetsWithoutEngineID() throws {
@@ -347,5 +348,63 @@ struct PersistenceHardeningTests {
         let state = AppState(client: HomeAssistantClient(), keychain: KeychainTokenStore(), defaults: defaults)
 
         #expect(state.selectedTargetIDs == ["media_player.kitchen"])
+    }
+
+    @Test func dropsCorruptSavedPhraseWhilePreservingValidPhrases() throws {
+        let validID = UUID()
+        let presetID = VoicePreset.defaultPreset.id
+        let json = """
+        {
+            "savedPhrases": [
+                {
+                    "id": "\(validID.uuidString)",
+                    "name": "Dinner",
+                    "draft": {
+                        "message": "Dinner is ready",
+                        "mode": "once",
+                        "repeatCount": 3,
+                        "repeatDurationMinutes": 5,
+                        "repeatIntervalSeconds": 60,
+                        "countdownMinutes": 10,
+                        "countdownIntervalMinutes": 1,
+                        "countdownTemplate": "You have {minutes} minutes until it's time to go.",
+                        "finalMessage": "It's time to go."
+                    },
+                    "targetIDs": ["media_player.kitchen", "media_player.office"],
+                    "voicePresetID": "\(presetID.uuidString)"
+                },
+                {
+                    "id": "not-a-uuid",
+                    "name": "Corrupt"
+                },
+                {
+                    "id": "\(UUID().uuidString)",
+                    "name": "Bad Mode",
+                    "draft": {
+                        "message": "Hi",
+                        "mode": "unknownFutureMode",
+                        "repeatCount": 3,
+                        "repeatDurationMinutes": 5,
+                        "repeatIntervalSeconds": 60,
+                        "countdownMinutes": 10,
+                        "countdownIntervalMinutes": 1,
+                        "countdownTemplate": "t",
+                        "finalMessage": "f"
+                    },
+                    "targetIDs": [],
+                    "voicePresetID": "\(presetID.uuidString)"
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(PersistedAppState.self, from: json)
+
+        #expect(decoded.savedPhrases.count == 1)
+        #expect(decoded.savedPhrases[0].id == validID)
+        #expect(decoded.savedPhrases[0].name == "Dinner")
+        #expect(decoded.savedPhrases[0].draft.message == "Dinner is ready")
+        #expect(decoded.savedPhrases[0].targetIDs == ["media_player.kitchen", "media_player.office"])
+        #expect(decoded.savedPhrases[0].voicePresetID == presetID)
     }
 }

@@ -211,3 +211,232 @@ struct ComposerDraftTests {
         #expect(state.messages.map(\.text) == ["2 remaining", "Time's up"])
     }
 }
+
+@MainActor
+struct SavedPhraseTests {
+    private let kitchen = MediaPlayerTarget(entityID: "media_player.kitchen", friendlyName: "Kitchen", state: "idle")
+    private let office = MediaPlayerTarget(entityID: "media_player.office", friendlyName: "Office", state: "idle")
+    private let bedroom = MediaPlayerTarget(entityID: "media_player.bedroom", friendlyName: "Bedroom", state: "idle")
+    private let cloudEngine = TTSEngine(entityID: VoicePreset.cloudEngineID, name: "Home Assistant Cloud")
+    private let piperEngine = TTSEngine(entityID: "tts.piper", name: "Piper")
+
+    private func makeAppState(
+        suiteName: String = "SavedPhraseTests-\(UUID().uuidString)",
+        token: String = "saved-phrase-token-\(UUID().uuidString)"
+    ) -> (AppState, String, String) {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PhraseMockURLProtocol.self]
+        let client = HomeAssistantClient(urlSession: URLSession(configuration: config))
+        let defaults = UserDefaults(suiteName: suiteName)!
+
+        let state = AppState(
+            client: client,
+            keychain: KeychainTokenStore(),
+            defaults: defaults
+        )
+        state.serverProfile = ServerProfile(serverURL: "http://homeassistant.local:8123", displayName: "Home Assistant", lastConnectionStatus: .connected)
+        state.token = token
+        state.mediaPlayers = [kitchen, office, bedroom]
+        state.ttsEngines = [cloudEngine, piperEngine]
+        state.selectedTargetIDs = [kitchen.entityID]
+        return (state, suiteName, token)
+    }
+
+    @Test func saveUpdateRenameMoveDeleteAndPersistAcrossReload() throws {
+        let suiteName = "SavedPhrasePersist-\(UUID().uuidString)"
+        let (state, _, token) = makeAppState(suiteName: suiteName)
+        defer { PhraseMockURLProtocol.removeHandler(forToken: token) }
+
+        let jenny = try #require(VoicePreset.builtIns.first { $0.name == "Jenny" })
+        let guy = try #require(VoicePreset.builtIns.first { $0.name == "Guy" })
+
+        state.selectedTargetIDs = [office.entityID, kitchen.entityID]
+        state.selectedVoiceID = jenny.id
+        let first = state.savePhrase(
+            name: "  Dinner  ",
+            draft: ComposerDraft(message: "Dinner is ready", mode: .once)
+        )
+        #expect(first.name == "Dinner")
+        #expect(first.targetIDs == [office.entityID, kitchen.entityID])
+        #expect(first.voicePresetID == jenny.id)
+
+        state.selectedTargetIDs = [bedroom.entityID]
+        state.selectedVoiceID = guy.id
+        let second = state.savePhrase(
+            name: "Bedtime",
+            draft: ComposerDraft(mode: .countdown, countdownMinutes: 15, finalMessage: "Lights out")
+        )
+        #expect(state.savedPhrases.map(\.id) == [first.id, second.id])
+
+        // Update first phrase with current composer + speaker/voice selection
+        let updatedDraft = ComposerDraft(message: "Supper time", mode: .repeatCount, repeatCount: 2, repeatIntervalSeconds: 20)
+        state.updatePhrase(first, with: updatedDraft)
+        #expect(state.savedPhrases[0].draft == updatedDraft)
+        #expect(state.savedPhrases[0].targetIDs == [bedroom.entityID])
+        #expect(state.savedPhrases[0].voicePresetID == guy.id)
+        #expect(state.savedPhrases[0].name == "Dinner")
+
+        // Rename and ignore blank rename
+        state.renamePhrase(first, to: "  Supper  ")
+        #expect(state.savedPhrases[0].name == "Supper")
+        state.renamePhrase(first, to: "   ")
+        #expect(state.savedPhrases[0].name == "Supper")
+
+        // Reorder
+        state.movePhrases(fromOffsets: IndexSet(integer: 0), toOffset: 2)
+        #expect(state.savedPhrases.map(\.id) == [second.id, first.id])
+
+        // Reload from UserDefaults and confirm persisted order & edits
+        let reloaded = AppState(
+            client: HomeAssistantClient(),
+            keychain: KeychainTokenStore(),
+            defaults: UserDefaults(suiteName: suiteName)!
+        )
+        #expect(reloaded.savedPhrases.count == 2)
+        #expect(reloaded.savedPhrases[0] == state.savedPhrases[0])
+        #expect(reloaded.savedPhrases[1] == state.savedPhrases[1])
+
+        // Delete
+        reloaded.deletePhrase(second)
+        #expect(reloaded.savedPhrases.map(\.id) == [first.id])
+
+        let reloadedAfterDelete = AppState(
+            client: HomeAssistantClient(),
+            keychain: KeychainTokenStore(),
+            defaults: UserDefaults(suiteName: suiteName)!
+        )
+        #expect(reloadedAfterDelete.savedPhrases.map(\.id) == [first.id])
+    }
+
+    @Test func applyPhraseRestoresSpeakersInOrderAndVoiceWithoutSending() async throws {
+        let (state, _, token) = makeAppState()
+        defer { PhraseMockURLProtocol.removeHandler(forToken: token) }
+
+        var requestCount = 0
+        PhraseMockURLProtocol.setHandler(forToken: token) { request in
+            requestCount += 1
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (response, Data())
+        }
+
+        let jenny = try #require(VoicePreset.builtIns.first { $0.name == "Jenny" })
+        state.selectedTargetIDs = [kitchen.entityID]
+        state.selectedVoiceID = VoicePreset.defaultPreset.id
+
+        let phrase = SavedPhrase(
+            name: "Office & Bedroom",
+            draft: ComposerDraft(message: "Hello", mode: .once),
+            targetIDs: [bedroom.entityID, office.entityID],
+            voicePresetID: jenny.id
+        )
+
+        let result = state.apply(phrase)
+
+        #expect(result == PhraseApplyResult(missingSpeakerCount: 0, allSpeakersMissing: false, voiceUnavailable: false))
+        #expect(result.noticeMessage == nil)
+        #expect(state.selectedTargetIDs == [bedroom.entityID, office.entityID])
+        #expect(state.selectedTargets == [bedroom, office])
+        #expect(state.selectedVoiceID == jenny.id)
+        #expect(state.messages.isEmpty)
+        #expect(state.repeatSessions.isEmpty)
+        #expect(state.countdownSessions.isEmpty)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(requestCount == 0)
+    }
+
+    @Test func applyPhraseHandlesPartialMissingSpeakers() throws {
+        let (state, _, token) = makeAppState()
+        defer { PhraseMockURLProtocol.removeHandler(forToken: token) }
+
+        let guy = try #require(VoicePreset.builtIns.first { $0.name == "Guy" })
+        let phrase = SavedPhrase(
+            name: "Mixed Speakers",
+            draft: ComposerDraft(message: "Notice", mode: .once),
+            targetIDs: [office.entityID, "media_player.removed", kitchen.entityID],
+            voicePresetID: guy.id
+        )
+
+        let result = state.apply(phrase)
+
+        #expect(result.missingSpeakerCount == 1)
+        #expect(!result.allSpeakersMissing)
+        #expect(!result.voiceUnavailable)
+        #expect(result.noticeMessage != nil)
+        #expect(state.selectedTargetIDs == [office.entityID, kitchen.entityID])
+        #expect(state.selectedVoiceID == guy.id)
+    }
+
+    @Test func applyPhraseKeepsCurrentSpeakersWhenAllPhraseSpeakersMissing() throws {
+        let (state, _, token) = makeAppState()
+        defer { PhraseMockURLProtocol.removeHandler(forToken: token) }
+
+        let guy = try #require(VoicePreset.builtIns.first { $0.name == "Guy" })
+        state.selectedTargetIDs = [kitchen.entityID, office.entityID]
+
+        let phrase = SavedPhrase(
+            name: "Gone Speakers",
+            draft: ComposerDraft(message: "Hello", mode: .once),
+            targetIDs: ["media_player.gone1", "media_player.gone2"],
+            voicePresetID: guy.id
+        )
+
+        let result = state.apply(phrase)
+
+        #expect(result.missingSpeakerCount == 2)
+        #expect(result.allSpeakersMissing)
+        #expect(!result.voiceUnavailable)
+        #expect(result.noticeMessage != nil)
+        #expect(state.selectedTargetIDs == [kitchen.entityID, office.entityID])
+        #expect(state.selectedVoiceID == guy.id)
+    }
+
+    @Test func applyPhraseKeepsCurrentVoiceWhenPresetDeletedOrEngineUnavailable() {
+        let (state, _, token) = makeAppState()
+        defer { PhraseMockURLProtocol.removeHandler(forToken: token) }
+
+        let customPreset = VoicePreset(
+            id: UUID(),
+            name: "Piper Voice",
+            language: "en-US",
+            voice: "lessac",
+            isCustom: true,
+            engineID: "tts.piper"
+        )
+        state.addOrUpdateVoice(customPreset)
+
+        let defaultID = VoicePreset.defaultPreset.id
+        state.selectedVoiceID = defaultID
+
+        // 1. Deleted preset ID
+        let deletedVoicePhrase = SavedPhrase(
+            name: "Deleted Voice",
+            draft: ComposerDraft(message: "Hi", mode: .once),
+            targetIDs: [office.entityID],
+            voicePresetID: UUID()
+        )
+        let deletedResult = state.apply(deletedVoicePhrase)
+        #expect(deletedResult.voiceUnavailable)
+        #expect(deletedResult.missingSpeakerCount == 0)
+        #expect(deletedResult.noticeMessage != nil)
+        #expect(state.selectedVoiceID == defaultID)
+        #expect(state.selectedTargetIDs == [office.entityID])
+
+        // 2. Preset exists, but its engine (tts.piper) is no longer on the server
+        state.ttsEngines = [cloudEngine]
+        #expect(!state.isPresetAvailable(customPreset))
+
+        let unavailableEnginePhrase = SavedPhrase(
+            name: "Piper Phrase",
+            draft: ComposerDraft(message: "Hi", mode: .once),
+            targetIDs: [bedroom.entityID],
+            voicePresetID: customPreset.id
+        )
+        let unavailableResult = state.apply(unavailableEnginePhrase)
+        #expect(unavailableResult.voiceUnavailable)
+        #expect(unavailableResult.noticeMessage != nil)
+        #expect(state.selectedVoiceID == defaultID)
+        #expect(state.selectedTargetIDs == [bedroom.entityID])
+        #expect(state.hasUnavailableTargetOrVoice(for: unavailableEnginePhrase))
+    }
+}
+
